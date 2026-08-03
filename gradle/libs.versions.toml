@@ -1,0 +1,23 @@
+[versions]
+morphe-patcher = "1.5.2"
+morphe-patches-library = "1.4.1-dev.5"
+instagram-morphe-patches-library = "1.1.0-dev.3"
+# Required, not optional: the Morphe patches Gradle plugin resolves both `morphe-patcher` and
+# `smali` from this catalog by alias and throws "Version with alias smali not found in version
+# catalog" when either is absent. Value matches the one the Instagram patch library pins.
+# Tracking https://github.com/google/smali/issues/100.
+smali = "d92701d947"
+gson = "2.14.0"
+annotation = "1.9.1"
+
+[libraries]
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+annotation = { module = "androidx.annotation:annotation", version.ref = "annotation" }
+smali = { module = "com.github.MorpheApp.smali:smali", version.ref = "smali" }
+morphe-patches-library = { module = "app.morphe:morphe-patches-library", version.ref = "morphe-patches-library" }
+morphe-extensions-library = { module = "app.morphe:morphe-extensions-library", version.ref = "morphe-patches-library" }
+instagram-morphe-patches-library = { module = "app.morphe:instagram-morphe-patches-library", version.ref = "instagram-morphe-patches-library" }
+instagram-morphe-extensions-library = { module = "app.morphe:instagram-morphe-extensions-library", version.ref = "instagram-morphe-patches-library" }
+
+[plugins]
+android-library = { id = "com.android.library" }

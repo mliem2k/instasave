@@ -1,0 +1,45 @@
+InstaSave NOTICE
+================
+
+InstaSave is licensed under the GNU General Public License v3.0 (see LICENSE).
+
+This project is a patch bundle for use with Morphe (https://morphe.software), a hard fork of
+ReVanced, and depends on the GPLv3-licensed `instagram-morphe-patches-library`
+(https://github.com/brosssh/instagram-morphe-patches-library) and `morphe-patches-library`
+(https://github.com/MorpheApp/morphe-patches).
+
+InstaSave is an independent project and is not part of, and is not endorsed by, the Morphe or
+ReVanced projects. "InstaSave" is a distinct name and is not intended to be confused with
+"Morphe", "ReVanced", or any other patch project.
+
+GPLv3 §7(b) additional terms inherited from upstream
+-----------------------------------------------------
+
+The Morphe project applies GPLv3 §7(b) additional terms to its own code (see
+https://morphe.software and the NOTICE file of `instagram-morphe-patches-library`), which
+include a restriction against using the "Morphe" name/branding as the name of a derivative
+project. InstaSave complies with this by using its own distinct name and branding, and by
+linking against Morphe's libraries as a build dependency rather than redistributing their
+source under the InstaSave name.
+
+Any code copied (rather than depended upon) from Morphe or its libraries retains its original
+copyright header and license notice unmodified, per GPLv3 §5.
+
+Prior art: InstaEclipse
+-----------------------
+
+The seams InstaSave hooks were located by reading InstaEclipse
+(https://github.com/ReSo7200/InstaEclipse), an LSPosed module for Instagram, which is also
+licensed under GPLv3. Specifically, the following came from studying that project:
+
+  * the string literals used to anchor the story options builder and its tap handler,
+  * the observation that `MediaOption$Option` and its DOWNLOAD constant are not obfuscated and
+    are filtered out of an allowlist rather than absent,
+  * the two MobileConfig parameter ids that gate Instagram's own download row, and
+  * the approach of resolving a media URL by walking the live object graph for Instagram's
+    unobfuscated `ImageUrl` and `VideoVersionIntf` interfaces rather than tracing field paths.
+
+No InstaEclipse source is copied into this repository. Its architecture differs: InstaEclipse
+resolves targets at runtime with DexKit and hooks them through Xposed, whereas InstaSave
+resolves the same targets at patch time with Morphe fingerprints and injects bytecode, so no
+runtime hooking framework is present in the output APK.
