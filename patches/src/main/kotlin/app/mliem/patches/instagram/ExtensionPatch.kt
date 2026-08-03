@@ -11,6 +11,7 @@ internal object Extension {
     const val MEDIA_OPTIONS = "Lapp/mliem/extension/instasave/MediaOptions;"
     const val IMAGE_VIEW_REGISTRY = "Lapp/mliem/extension/instasave/ImageViewRegistry;"
     const val MOBILE_CONFIG_OVERRIDES = "Lapp/mliem/extension/instasave/MobileConfigOverrides;"
+    const val UPDATER = "Lapp/mliem/extension/instasave/Updater;"
 }
 
 /**

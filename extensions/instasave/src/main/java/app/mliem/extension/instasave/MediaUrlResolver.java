@@ -99,6 +99,18 @@ public final class MediaUrlResolver {
             InstaSave.log("resolve walk aborted", t);
         }
 
+        // Videos live behind a native-tree accessor, not a field, so the field walk alone can
+        // only ever find the cover image. If it found no video, do the second pass that invokes
+        // the media dict's accessors. Only paid on a tap, and only when a video was not already
+        // in a plain field.
+        if (!walk.hasVideo()) {
+            try {
+                walk.materializeVideosFromDicts();
+            } catch (Throwable t) {
+                InstaSave.log("pando video materialize aborted", t);
+            }
+        }
+
         List<Candidate> ranked = walk.rank();
         if (ranked.isEmpty()) {
             // Last resort: a URL an image view bound recently. Covers the case where the
@@ -148,8 +160,16 @@ public final class MediaUrlResolver {
         private final List<Candidate> videos = new ArrayList<>();
         private final Set<String> seenUrls = new HashSet<>();
 
+        // Pando/LiveTree media dictionaries met during the field walk. Their video-version list
+        // is not a field, so it is only materialized in a second pass (materializeVideosFromDicts).
+        private final List<Object> mediaDicts = new ArrayList<>();
+
         String username;
         String mediaId;
+
+        boolean hasVideo() {
+            return !videos.isEmpty();
+        }
 
         void run(Object root) {
             if (root == null) {
@@ -210,6 +230,9 @@ public final class MediaUrlResolver {
 
             harvestTypedAccessors(value, type);
             harvestMetadata(value, type);
+            if (isMediaDict(type)) {
+                mediaDicts.add(value);
+            }
 
             for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
                 Field[] fields;
@@ -274,6 +297,84 @@ public final class MediaUrlResolver {
                         ? (long) width * (long) height
                         : 0L;
                 addCandidate(new Candidate(url, isVideoUrl(url), weight));
+            }
+        }
+
+        /**
+         * Materializes video versions that live behind the Pando/LiveTree dictionary rather than
+         * in a plain field.
+         *
+         * <p>This is the crux of why a story used to save a still. Instagram stores
+         * {@code video_versions} inside a native LiveTree, exposed only through a zero-argument
+         * accessor on {@code LiveTreeMediaDict} (for example {@code A9w()}). Nothing materializes
+         * those objects until that method is called, so a field-only walk never sees a
+         * {@code VideoVersionIntf}, while the cover image, which IS a plain field on the media
+         * model, is always found and wins the fallback.
+         *
+         * <p>So when the field walk turned up no video, invoke every zero-argument
+         * {@code List}-returning accessor on each media-dict object and harvest any element
+         * implementing {@code VideoVersionIntf}. This is deliberately narrow: it only runs on the
+         * dict object itself (one or two per graph, matched by an unobfuscated interface name),
+         * only invokes zero-arg {@code List} getters, and stops at the first video list it finds.
+         *
+         * <p>Note it does invoke every zero-arg {@code List} getter on the dict, not only the
+         * video one (image_versions, tagged users, product tags, and so on), fast-failing on the
+         * first-element interface check. Those are all native tree reads on the dict itself, which
+         * are pure, so this is safe; it is not invoking arbitrary getters across the graph. The
+         * cost is bounded and paid only on a user tap, and only when no video was field-reachable.
+         */
+        void materializeVideosFromDicts() {
+            for (Object dict : mediaDicts) {
+                for (Class<?> current = dict.getClass();
+                        current != null && current != Object.class;
+                        current = current.getSuperclass()) {
+                    Method[] methods;
+                    try {
+                        methods = current.getDeclaredMethods();
+                    } catch (Throwable t) {
+                        break;
+                    }
+                    for (Method method : methods) {
+                        if (method.getParameterCount() != 0
+                                || Modifier.isStatic(method.getModifiers())
+                                || !List.class.isAssignableFrom(method.getReturnType())) {
+                            continue;
+                        }
+                        Object result;
+                        try {
+                            method.setAccessible(true);
+                            result = method.invoke(dict);
+                        } catch (Throwable t) {
+                            continue;
+                        }
+                        if (!(result instanceof List)) {
+                            continue;
+                        }
+                        List<?> list = (List<?>) result;
+                        if (list.isEmpty()
+                                || list.get(0) == null
+                                || !implementsInterfaceNamed(list.get(0).getClass(), VIDEO_VERSION_INTERFACE)) {
+                            continue;
+                        }
+                        for (Object element : list) {
+                            if (element == null
+                                    || !implementsInterfaceNamed(element.getClass(), VIDEO_VERSION_INTERFACE)) {
+                                continue;
+                            }
+                            String url = asString(invokeNoArg(element, "getUrl"));
+                            if (isMediaUrl(url)) {
+                                // VideoVersionIntf has no getWidth, so this is usually null; the
+                                // weight only ranks videos against each other and any video
+                                // already outranks every image.
+                                Integer width = asInt(invokeNoArg(element, "getWidth"));
+                                addCandidate(new Candidate(url, true, width != null ? width.longValue() : 1L));
+                            }
+                        }
+                        if (hasVideo()) {
+                            return;
+                        }
+                    }
+                }
             }
         }
 
@@ -345,6 +446,24 @@ public final class MediaUrlResolver {
                 || name.startsWith("com.facebook.")
                 || name.startsWith("X.")
                 || name.startsWith("LX.");
+    }
+
+    /**
+     * The Pando/LiveTree-backed media dictionary, whose version lists are behind accessor methods
+     * rather than fields. Matched on the interface-name fragment {@code "MediaDict"}, which covers
+     * {@code MutableMediaDictIntf} and its relatives, with a fallback on the concrete
+     * {@code LiveTreeMediaDict} class name.
+     */
+    private static boolean isMediaDict(Class<?> type) {
+        if (implementsInterfaceNamed(type, "MediaDict")) {
+            return true;
+        }
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            if (current.getName().endsWith(".LiveTreeMediaDict")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean implementsInterfaceNamed(Class<?> type, String simpleNameFragment) {

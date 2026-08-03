@@ -81,6 +81,38 @@ unobfuscated enum `MediaOption$Option` and filters it out of an allowlist, so th
 value to a list rather than building a row, and handles the tap with InstaSave's own downloader.
 Off by default because enabling it together with patch 1 would show two entries.
 
+Two more patches ship alongside the save actions:
+
+### Disable screenshot detection (default on)
+
+Stops Instagram reporting when you screenshot someone's story, reel or disappearing message. The
+observer callback that fires the report is neutralized with a `return-void`. This is separate from
+the save actions, which never trigger detection anyway because they download from the CDN and
+never capture the screen; the patch covers a manual screenshot too.
+
+### In-app updater (default on)
+
+Checks GitHub Releases about once a day and, when a newer build exists, posts a notification with
+a "Download and install" action driven by the system `PackageInstaller`. It rests on every build
+sharing one signing key (see Building), because Android rejects an update whose signature differs
+from the installed app. It is silent when the releases are not publicly reachable.
+
+## The video fix, and why saving used to give a still
+
+Saving a video story, reel or post used to save a still frame. The cause is not obfuscation, it is
+storage shape. Instagram keeps `video_versions` inside the native Pando/LiveTree and exposes it
+only through a zero-argument accessor method on the media dictionary (`LiveTreeMediaDict.A9w()`),
+never a plain field. The cover image, by contrast, IS a plain field on the media model. A
+field-only graph walk therefore never materializes the video and always finds the cover, so it
+saved the still.
+
+The resolver now runs a second pass when the field walk found no video: it invokes the
+zero-argument `List`-returning accessors on the media dictionary (matched by the unobfuscated
+`MutableMediaDictIntf` name), which forces the native tree to materialize, and harvests any
+element implementing `VideoVersionIntf`. It only touches the dictionary object, only calls
+zero-arg `List` getters (pure tree reads), runs only on a tap, and only when no video was already
+field-reachable. Posts and reels converge on the same media shape, so one fix covers all three.
+
 ## Resolving the media URL
 
 `RESEARCH.md` documents three independent leads (`can_viewer_save`, `image_versions2`,
@@ -126,11 +158,23 @@ as a non experimental target only once it is confirmed working on a device.
 
 ## Building
 
-One command does everything: build the bundle, fetch the patcher, patch, sign.
+Once, create the stable signing key. Every build shares it, which is what lets the in-app updater
+install a new version over an old one; Android rejects an update whose signature differs from the
+installed app. The key lives outside the repo and never leaves your machine.
+
+```sh
+tools/setup_keystore.sh
+```
+
+Then, one command does everything: build the bundle, fetch the patcher, patch, sign.
 
 ```sh
 tools/build_apk.sh ~/Downloads/instagram.xapk
 ```
+
+The build still works without the keystore, just unsigned for updates, and it says so. Note that
+builds signed with different keys cannot update each other, so a build made before the keystore
+existed has to be reinstalled once to get onto the stable key.
 
 Requirements it checks for you:
 
@@ -180,6 +224,7 @@ patches/     Kotlin. Fingerprints and the bytecode injections. Runs at build tim
 extensions/  Java. Compiled to a dex merged into the APK. Runs inside Instagram.
              Unit tests live under src/test.
 tools/       build_apk.sh      one command from an Instagram bundle to a signed APK
+             setup_keystore.sh the stable signing key the updater needs
              verify_anchors.py the per release anchor check
 ```
 
@@ -218,17 +263,23 @@ download row does not appear, since together they would produce two entries.
 - [x] Long press to save images, including profile pictures
 - [x] Fallback menu injection and standalone downloader
 - [x] Per release anchor verification tool
-- [x] Builds. `./gradlew :patches:build` produces `patches/build/libs/patches-0.1.0.mpp` with the
-      extension dex bundled at `extensions/instasave.mpe`.
-- [x] **All six patches apply cleanly to Instagram 440.1.0.46.86**, with zero patch exceptions,
+- [x] The video fix: saving a video story, reel or post now resolves the real `.mp4` instead of
+      the cover still. Unit tested against a fake that reproduces the native-accessor shape.
+- [x] Disable screenshot detection.
+- [x] In-app updater from GitHub Releases, with a stable signing key so updates install in place.
+- [x] Builds. `./gradlew :patches:build` produces `patches/build/libs/patches-0.2.0.mpp` with the
+      extension dex bundled at `extensions/instasave.mpe`. 23 JVM unit tests pass.
+- [x] **All eight patches apply cleanly to Instagram 440.1.0.46.86**, with zero patch exceptions,
       and each injection was confirmed by disassembling the output rather than trusting the exit
-      code. See `RESEARCH.md` for the table of exactly which method each one landed in.
+      code, including the screenshot method now beginning `return-void` and the two `onCreate`
+      injections.
 - [x] **Installs and runs.** The patched build installs as a separate app alongside Instagram,
-      ART verifies the injected bytecode, the app launches to the real login screen, and the
-      extension logs `InstaSave: context captured: com.instagram.android.instasave` from inside
-      the running process, so the injected code is confirmed executing and not merely present.
-- [ ] Save actions not yet exercised end to end. That needs a logged in account on the test
-      device, which nothing here has. Everything up to the point of tapping is verified.
+      ART verifies the injected bytecode, and the app launches to the real login screen. The
+      extension logs its captured context from inside the process, and the updater fires at
+      startup, reaches GitHub, and handles the response without crashing.
+- [ ] Save actions not yet exercised end to end on a real logged-in video. That needs a logged in
+      account on the test device, which nothing here has. Everything up to the tap is verified,
+      and the video resolution is unit tested against a faithful fake.
 
 Verified against Instagram 440.1.0.46.86 (versionCode 384611456) on an Android 16 (API 36)
 arm64 emulator.

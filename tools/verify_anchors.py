@@ -160,6 +160,13 @@ def parse_fingerprints(path: Path) -> list[FingerprintSpec]:
         for match in re.finditer(r'readsOption\s*\(\s*"(\w+)"\s*\)', body):
             add("field", match.group(1))
 
+        # String literals compared inside a custom{} lambda, e.g.
+        # getReference<StringReference>()?.string == "ScreenshotNotificationManager".
+        # These are real string anchors that would otherwise be invisible to the parser,
+        # since they are not in a strings = listOf(...) block.
+        for match in re.finditer(r'\.string\s*==\s*"((?:[^"\\]|\\.)*)"', body):
+            add("string", match.group(1).replace('\\"', '"'))
+
         specs.append(spec)
 
     specs.extend(parse_mobile_config_ids())

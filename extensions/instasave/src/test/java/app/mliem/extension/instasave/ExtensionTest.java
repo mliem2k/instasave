@@ -1,5 +1,6 @@
 package app.mliem.extension.instasave;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -146,6 +147,91 @@ public class ExtensionTest {
 
     // endregion
 
+    // region pando media dict (the video fix)
+
+    @Test
+    public void materializesVideoFromTheMediaDictOverTheFieldReachableCover() {
+        // The crux of the fix. video_versions live behind a native accessor, not a field, so a
+        // field-only walk finds only the cover still and used to save that. The second pass invokes
+        // the dict's zero-arg List accessor and must pick the VIDEO over the huge cover image that
+        // IS a plain field.
+        Fakes.MediaDict dict = new Fakes.MediaDict(
+                CDN + "clip.mp4", 720, new Fakes.Image(CDN + "cover.jpg", 4000, 4000));
+        Fakes.Media media = new Fakes.Media("17912345678901234_1234567",
+                new ArrayList<Object>(), new Fakes.User("someone"));
+        media.mediaDict = dict;
+
+        MediaUrlResolver.Resolved resolved = MediaUrlResolver.resolve(media);
+
+        assertNotNull(resolved);
+        assertEquals(CDN + "clip.mp4", resolved.url);
+        assertTrue(resolved.video);
+        assertTrue("the dict's video accessor must have been invoked", dict.videoVersionsInvoked);
+    }
+
+    @Test
+    public void fallsBackToTheCoverWhenTheDictHasNoVideoVersions() {
+        // A genuinely video-less dict: its accessor returns an empty list. The second pass must not
+        // crash or hang on that, and resolution must still fall back to the only thing present,
+        // the cover image.
+        Fakes.MediaDict dict = new Fakes.MediaDict(
+                null, 0, new Fakes.Image(CDN + "cover.jpg", 1080, 1080));
+        Fakes.Media media = new Fakes.Media("17912345678901234_1234567",
+                new ArrayList<Object>(), new Fakes.User("someone"));
+        media.mediaDict = dict;
+
+        MediaUrlResolver.Resolved resolved = MediaUrlResolver.resolve(media);
+
+        assertNotNull(resolved);
+        assertEquals(CDN + "cover.jpg", resolved.url);
+        assertFalse(resolved.video);
+        assertTrue("an empty video list still counts as the second pass having run",
+                dict.videoVersionsInvoked);
+    }
+
+    @Test
+    public void doesNotRunTheDictPassWhenAVideoIsAlreadyFieldReachable() {
+        // The dict pass is a fallback, not a replacement. A video sitting in a plain field must
+        // resolve as that video, and the dict's accessor must never be touched, even though the
+        // dict could produce a different video.
+        Fakes.MediaDict dict = new Fakes.MediaDict(
+                CDN + "dict.mp4", 1080, new Fakes.Image(CDN + "cover.jpg", 4000, 4000));
+        Fakes.Media media = new Fakes.Media("17912345678901234_1234567",
+                Arrays.<Object>asList(new Fakes.Video(CDN + "field.mp4", 720)),
+                new Fakes.User("someone"));
+        media.mediaDict = dict;
+
+        MediaUrlResolver.Resolved resolved = MediaUrlResolver.resolve(media);
+
+        assertNotNull(resolved);
+        assertEquals(CDN + "field.mp4", resolved.url);
+        assertTrue(resolved.video);
+        assertFalse("the dict pass must not run when a field video already exists",
+                dict.videoVersionsInvoked);
+    }
+
+    @Test
+    public void secondPassInvokesOnlyZeroArgListAccessors() {
+        // The second pass must invoke ONLY zero-arg, List-returning accessors: pure native reads,
+        // no side effects. A zero-arg accessor that returns something else, and an accessor that
+        // takes an argument, must both be skipped; the video still comes back from videoVersions().
+        Fakes.MediaDict dict = new Fakes.MediaDict(
+                CDN + "clip.mp4", 720, new Fakes.Image(CDN + "cover.jpg", 1080, 1080));
+        Fakes.Media media = new Fakes.Media("17912345678901234_1234567",
+                new ArrayList<Object>(), new Fakes.User("someone"));
+        media.mediaDict = dict;
+
+        MediaUrlResolver.Resolved resolved = MediaUrlResolver.resolve(media);
+
+        assertNotNull(resolved);
+        assertEquals(CDN + "clip.mp4", resolved.url);
+        assertTrue(resolved.video);
+        assertFalse("a non-List zero-arg accessor must not be invoked", dict.nonListAccessorInvoked);
+        assertFalse("an arg-taking accessor must not be invoked", dict.argAccessorInvoked);
+    }
+
+    // endregion
+
     // region URL classification
 
     @Test
@@ -209,6 +295,41 @@ public class ExtensionTest {
         assertNull(MobileConfigOverrides.evaluate(-1L));
         assertNull(MobileConfigOverrides.evaluate(0x81035f00020d71L)); // the Instagram 436 id
         assertNull(MobileConfigOverrides.evaluate(0x81035f00020d63L)); // one bit away
+    }
+
+    // endregion
+
+    // region updater version comparison
+
+    @Test
+    public void newerTagBeatsAnOlderVersionAndEqualsAreNotNewer() {
+        // The plain cases: a higher dotted version wins, an equal one does not, a lower one does
+        // not, and a leading "v" on the remote tag is irrelevant.
+        assertTrue(Updater.isNewer("v0.2.0", "0.1.0"));
+        assertFalse(Updater.isNewer("0.1.0", "0.1.0"));
+        assertFalse(Updater.isNewer("v0.1.0", "0.2.0"));
+    }
+
+    @Test
+    public void versionCompareIsNumericAndSurvivesRaggedOrGarbageTags() {
+        // Ragged, prefixed and garbage tags must never crash and must default to not-newer.
+        assertFalse("a shorter tag equal on every shared component is not newer",
+                Updater.isNewer("v1.0", "1.0.0"));
+        assertFalse("an unparseable tag defaults to not-newer",
+                Updater.isNewer("garbage", "0.1.0"));
+        assertTrue("comparison is numeric, not lexical (10 > 9)",
+                Updater.isNewer("v0.10.0", "0.9.0"));
+        assertTrue("a longer tag with a trailing component is newer",
+                Updater.isNewer("v1.2.3.4", "1.2.3"));
+    }
+
+    @Test
+    public void parseVersionStripsAVPrefixAndNonNumericSuffixes() {
+        // Leading v/V is dropped and each component keeps only its leading numeric run.
+        assertArrayEquals(new int[]{1, 2, 3}, Updater.parseVersion("v1.2.3"));
+        assertArrayEquals(new int[]{1, 2, 3}, Updater.parseVersion("V1.2.3"));
+        assertArrayEquals(new int[]{1, 2, 3}, Updater.parseVersion("1.2.3-beta"));
+        assertArrayEquals(new int[]{2, 0}, Updater.parseVersion("v2.0"));
     }
 
     // endregion

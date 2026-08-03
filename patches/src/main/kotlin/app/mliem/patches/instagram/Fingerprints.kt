@@ -5,6 +5,7 @@ import app.morphe.patcher.literal
 import app.morphe.util.getReference
 import app.morphe.util.indexOfFirstInstruction
 import com.android.tools.smali.dexlib2.iface.reference.FieldReference
+import com.android.tools.smali.dexlib2.iface.reference.StringReference
 
 /**
  * Every fingerprint in this bundle.
@@ -157,4 +158,41 @@ internal object ImageUrlBindFingerprint : Fingerprint(
     definingClass = "/IgImageView;",
     returnType = "V",
     parameters = listOf("/ImageUrl;", "L")
+)
+
+/**
+ * The screenshot-detection observer callback for stories, reels and disappearing DMs.
+ *
+ * When Android reports a screenshot, Instagram's detector posts a callback to each registered
+ * observer; the observer for these surfaces decides whether to send the "X screenshotted your
+ * story" report. That callback is a void method taking a single long (the media id) and carries
+ * no string of its own, so it is anchored by shape plus the "ScreenshotNotificationManager"
+ * literal that a sibling method in the same class registers with. That pair is unique in the app:
+ * only this class has both a (long) -> void method and that string. Neutralizing the method
+ * suppresses the report. This is the static equivalent of the reference module's runtime hook,
+ * which finds the same void(long) by the same string and cancels it.
+ *
+ * Not a MobileConfig flag: the gate is per-conversation runtime state, so there is no id to
+ * force, and returning early from the emit method is the correct lever.
+ *
+ * The callback carries no string of its own, so the parameters plus the class-level string are
+ * what select it. On Instagram 440 that class declares exactly one `(J)V` method, so the match is
+ * unambiguous. The custom block also asserts that uniqueness: if a future release adds a second
+ * `(J)V` to the same class, the fingerprint fails to resolve and the build stops, rather than
+ * silently neutralizing the wrong method.
+ */
+internal object ScreenshotDetectionReportFingerprint : Fingerprint(
+    returnType = "V",
+    parameters = listOf("J"),
+    custom = { _, classDef ->
+        val referencesString = classDef.methods.any { sibling ->
+            sibling.indexOfFirstInstruction {
+                getReference<StringReference>()?.string == "ScreenshotNotificationManager"
+            } >= 0
+        }
+        val voidLongMethods = classDef.methods.count { candidate ->
+            candidate.returnType == "V" && candidate.parameterTypes.singleOrNull()?.toString() == "J"
+        }
+        referencesString && voidLongMethods == 1
+    }
 )

@@ -1,5 +1,6 @@
 package com.instagram.test;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -69,6 +70,8 @@ public final class Fakes {
     public static final class Media {
         public List<Object> candidates;
         public Object owner;
+        /** A Pando/LiveTree media dictionary hung off the model, reached by the field walk. */
+        public Object mediaDict;
         private final String id;
 
         public Media(String id, List<Object> candidates, Object owner) {
@@ -78,6 +81,74 @@ public final class Fakes {
         }
 
         public String getId() { return id; }
+    }
+
+    /**
+     * Simple name contains "MediaDict", so {@code MediaUrlResolver.isMediaDict} matches anything
+     * implementing it, exactly as it matches Instagram's own {@code MutableMediaDictIntf}.
+     */
+    public interface MediaDictIntf {
+    }
+
+    /**
+     * A Pando/LiveTree style media dictionary, the shape behind the bug where a video story used to
+     * save its still cover.
+     *
+     * <p>The cover still IS a plain field, so the resolver's field walk always finds it. The video
+     * versions are NOT a field: they are produced only by the zero-arg {@link #videoVersions()}
+     * accessor, mirroring {@code LiveTreeMediaDict.A9w()}, a native JNI accessor with no backing
+     * Java field. The video URL and width are held as a {@code char[]} and an {@code int}, both of
+     * which the field walk provably skips (it never descends into primitives or primitive-component
+     * arrays), so nothing about the video is reachable until the accessor materializes it. That is
+     * what forces the resolver's second pass to run to see the video at all.
+     */
+    public static final class MediaDict implements MediaDictIntf {
+
+        /** The cover still, reachable through the field walk. This used to win, wrongly. */
+        public Object coverImage;
+
+        // Video source data hidden from the field walk: a char[] (primitive-component array) and an
+        // int (primitive) are both skipped by the walk, so only videoVersions() can reach the video.
+        private final char[] videoUrl;
+        private final int videoWidth;
+
+        /** Set when videoVersions() runs, so a test can prove the second pass did (or did not) fire. */
+        public boolean videoVersionsInvoked = false;
+        /** Set if a non-List zero-arg accessor is wrongly invoked by the second pass. Must stay false. */
+        public boolean nonListAccessorInvoked = false;
+        /** Set if an arg-taking accessor is wrongly invoked by the second pass. Must stay false. */
+        public boolean argAccessorInvoked = false;
+
+        public MediaDict(String videoUrl, int videoWidth, Object coverImage) {
+            this.videoUrl = videoUrl == null ? new char[0] : videoUrl.toCharArray();
+            this.videoWidth = videoWidth;
+            this.coverImage = coverImage;
+        }
+
+        /**
+         * The ONLY path to the video: a zero-arg, List-returning accessor, exactly the shape the
+         * resolver's second pass invokes. Materializes a fresh Video from the hidden buffer, or an
+         * empty list when there genuinely is no video.
+         */
+        public List<Object> videoVersions() {
+            videoVersionsInvoked = true;
+            if (videoUrl.length == 0) {
+                return Collections.emptyList();
+            }
+            return Collections.<Object>singletonList(new Video(new String(videoUrl), videoWidth));
+        }
+
+        /** Zero-arg but returns a String, not a List: the second pass must skip it by return type. */
+        public String coverImageId() {
+            nonListAccessorInvoked = true;
+            throw new AssertionError("non-List zero-arg accessor must never be invoked by the dict pass");
+        }
+
+        /** Takes an argument: the second pass must skip it by parameter count. */
+        public List<Object> versionAt(int index) {
+            argAccessorInvoked = true;
+            throw new AssertionError("arg-taking accessor must never be invoked by the dict pass");
+        }
     }
 
     public static final class User {

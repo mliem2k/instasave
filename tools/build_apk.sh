@@ -117,14 +117,40 @@ for patch in "${DEFAULT_PATCHES[@]}" ${EXTRA_PATCHES[@]+"${EXTRA_PATCHES[@]}"}; 
     printf '    enable: %s\n' "$patch"
 done
 
+# Sign with a stable key so the in-app updater works. Morphe otherwise mints a fresh
+# ephemeral key per build, and Android rejects an update whose signature does not match
+# the installed app, so two builds off the same source would refuse to update each other.
+# The keystore lives outside the repo (it is a signing key) and is created by
+# tools/setup_keystore.sh. Without it the build still works, just unsigned for updates.
+SIGN_ARGS=()
+KEYSTORE="${INSTASAVE_KEYSTORE:-$HOME/.instasave/instasave-release.keystore}"
+KEYSTORE_PASS="${INSTASAVE_KEYSTORE_PASS:-instasave}"
+KEYSTORE_ALIAS="${INSTASAVE_KEYSTORE_ALIAS:-instasave}"
+if [ -f "$KEYSTORE" ]; then
+    SIGN_ARGS=(
+        --keystore "$KEYSTORE"
+        --keystore-password "$KEYSTORE_PASS"
+        --keystore-entry-alias "$KEYSTORE_ALIAS"
+        --keystore-entry-password "$KEYSTORE_PASS"
+    )
+    printf '    signing with stable key: %s (alias %s)\n' "$KEYSTORE" "$KEYSTORE_ALIAS"
+else
+    printf '    warning: %s not found, using an ephemeral key.\n' "$KEYSTORE"
+    printf '             In-app updates will not work across builds. Run tools/setup_keystore.sh.\n'
+fi
+
 step "Patching"
 # --continue-on-error reports every fingerprint that failed in one run rather than
 # stopping at the first, which is what you want when trying a new Instagram version.
 # -f skips the version compatibility check, since compatibility here is deliberately
 # declared as "any version".
+# The +"${...}" guard is required: SIGN_ARGS is empty on the no-keystore path, and under
+# `set -u` an empty-array [@] expansion is an "unbound variable" error on bash 3.2 (macOS's
+# default), which would abort the very fallback the script documents as supported.
 JAVA_HOME="$JDK21" "$JDK21/bin/java" -jar "$CLI" patch \
     -p "$MPP" \
     --exclusive --continue-on-error -f \
+    ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
     "${ENABLE_ARGS[@]}" \
     -o "$OUTPUT" \
     -t "$WORK_DIR/patching" \
