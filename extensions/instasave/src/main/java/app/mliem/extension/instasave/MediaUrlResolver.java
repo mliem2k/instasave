@@ -151,6 +151,18 @@ public final class MediaUrlResolver {
         }
 
         Candidate chosen = ranked.get(0);
+
+        // The best video is ranked first (videos before images, highest resolution first). When
+        // the user has turned the quality preference off, save the smallest video instead, which
+        // is the data saver choice. Applied only to a single video, not to a carousel selection.
+        if (chosen.video && carouselIndex < 0 && !Settings.highestQuality()) {
+            for (Candidate candidate : ranked) {
+                if (candidate.video && candidate.weight < chosen.weight) {
+                    chosen = candidate;
+                }
+            }
+        }
+
         if (carouselIndex >= 0) {
             // Slides of one carousel are all the same media kind, so index within that kind.
             List<Candidate> sameKind = new ArrayList<>();
@@ -321,9 +333,7 @@ public final class MediaUrlResolver {
 
             long weight;
             if (video) {
-                Integer width = asInt(invokeNoArg(value, "getWidth"));
-                weight = width != null ? width.longValue() : 1L;
-                addCandidate(new Candidate(url, true, weight));
+                addCandidate(new Candidate(url, true, videoResolutionWeight(value)));
             } else {
                 Integer width = asInt(invokeNoArg(value, "getWidth"));
                 Integer height = asInt(invokeNoArg(value, "getHeight"));
@@ -412,11 +422,7 @@ public final class MediaUrlResolver {
                             }
                             String url = asString(invokeNoArg(element, "getUrl"));
                             if (isMediaUrl(url)) {
-                                // VideoVersionIntf has no getWidth, so this is usually null; the
-                                // weight only ranks videos against each other and any video
-                                // already outranks every image.
-                                Integer width = asInt(invokeNoArg(element, "getWidth"));
-                                addCandidate(new Candidate(url, true, width != null ? width.longValue() : 1L));
+                                addCandidate(new Candidate(url, true, videoResolutionWeight(element)));
                             }
                         }
                         if (hasVideo()) {
@@ -574,6 +580,57 @@ public final class MediaUrlResolver {
             }
         }
         return false;
+    }
+
+    /**
+     * A resolution proxy for a {@code VideoVersionIntf}, so the highest quality variant wins.
+     *
+     * <p>Unlike {@code ImageUrl}, the video interface has no {@code getWidth}/{@code getHeight};
+     * its width, height and a small type tag are three obfuscated {@code Integer} accessors whose
+     * names change every release. Rather than resolve those names, this reads the value of every
+     * zero-argument {@code Integer}-returning accessor and takes the product of the two largest.
+     * Width and height are hundreds or thousands while the type tag is a small number, so the two
+     * largest are always the dimensions, and their product is the pixel area. No accessor name is
+     * assumed, so this survives obfuscation.
+     *
+     * <p>Returns 1 when no dimensions can be read, which still ranks a video above every image
+     * (an image with a real area outranks 1, but videos are ranked before images regardless).
+     */
+    private static long videoResolutionWeight(Object video) {
+        List<Integer> values = new ArrayList<>(4);
+        for (Class<?> current = video.getClass();
+                current != null && current != Object.class;
+                current = current.getSuperclass()) {
+            Method[] methods;
+            try {
+                methods = current.getDeclaredMethods();
+            } catch (Throwable t) {
+                break;
+            }
+            for (Method method : methods) {
+                if (method.getParameterCount() != 0
+                        || Modifier.isStatic(method.getModifiers())
+                        || method.getReturnType() != Integer.class) {
+                    continue;
+                }
+                try {
+                    method.setAccessible(true);
+                    Object value = method.invoke(video);
+                    if (value instanceof Integer && (Integer) value > 0) {
+                        values.add((Integer) value);
+                    }
+                } catch (Throwable ignored) {
+                    // Not a readable dimension; skip it.
+                }
+            }
+        }
+        if (values.isEmpty()) {
+            return 1L;
+        }
+        Collections.sort(values, Collections.reverseOrder());
+        long largest = values.get(0);
+        long second = values.size() > 1 ? values.get(1) : 1L;
+        return largest * second;
     }
 
     private static boolean implementsInterfaceNamed(Class<?> type, String simpleNameFragment) {

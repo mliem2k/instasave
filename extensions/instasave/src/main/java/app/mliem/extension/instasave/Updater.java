@@ -12,7 +12,6 @@ import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
-import android.provider.Settings;
 
 // BuildConfig is generated under the module's AGP namespace (app.mliem.extension), not this
 // source package. INSTASAVE_VERSION is injected there from the gradle `version` property.
@@ -100,11 +99,15 @@ public final class Updater {
                 ? context.getApplicationContext()
                 : context;
         registerReceiver(app);
+        if (!Settings.autoUpdate()) {
+            // The user turned automatic checks off in settings. The "check now" button still works.
+            return;
+        }
         IO.execute(new Runnable() {
             @Override
             public void run() {
                 try {
-                    checkForUpdate(app);
+                    checkForUpdate(app, false);
                 } catch (Throwable t) {
                     // Never surfaced. A failed check is not the user's problem.
                     InstaSave.log("update check failed", t);
@@ -113,13 +116,46 @@ public final class Updater {
         });
     }
 
+    /**
+     * Checks now, on demand from the settings screen. Ignores the automatic-check preference and
+     * the once-a-day debounce, and tells the user the outcome either way, since they asked.
+     */
+    public static void checkNow(Context context) {
+        if (context == null) {
+            return;
+        }
+        final Context app = context.getApplicationContext() != null
+                ? context.getApplicationContext()
+                : context;
+        registerReceiver(app);
+        InstaSave.toast(app, "Checking for updates");
+        IO.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    boolean offered = checkForUpdate(app, true);
+                    if (!offered) {
+                        InstaSave.toast(app, "InstaSave is up to date");
+                    }
+                } catch (Throwable t) {
+                    InstaSave.log("manual update check failed", t);
+                    InstaSave.toast(app, "Update check failed");
+                }
+            }
+        });
+    }
+
     // region check
 
-    private static void checkForUpdate(Context app) throws Exception {
+    /**
+     * @param force ignore the once-a-day debounce (a manual check from settings)
+     * @return true when a newer release was found and offered
+     */
+    private static boolean checkForUpdate(Context app, boolean force) throws Exception {
         long now = System.currentTimeMillis();
         long last = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_LAST_CHECK, 0L);
-        if (now - last < CHECK_INTERVAL_MS) {
-            return;
+        if (!force && now - last < CHECK_INTERVAL_MS) {
+            return false;
         }
 
         HttpURLConnection connection = (HttpURLConnection) new URL(LATEST_RELEASE_API).openConnection();
@@ -136,12 +172,12 @@ public final class Updater {
                 // launch, then stay silent.
                 InstaSave.log("release API returned " + code + " (private repo or no release)");
                 markChecked(app, now);
-                return;
+                return false;
             }
             if (code < 200 || code > 299) {
                 // Transient. Do NOT mark checked, so the next launch retries.
                 InstaSave.log("release API HTTP " + code);
-                return;
+                return false;
             }
 
             String body = readAll(connection.getInputStream());
@@ -151,11 +187,13 @@ public final class Updater {
             String tag = json.optString("tag_name", "");
             String apkUrl = firstApkAssetUrl(json.optJSONArray("assets"));
             if (tag.isEmpty() || apkUrl == null) {
-                return;
+                return false;
             }
             if (isNewer(tag, currentVersion())) {
                 notifyUpdate(app, tag, apkUrl);
+                return true;
             }
+            return false;
         } finally {
             connection.disconnect();
         }
@@ -321,7 +359,7 @@ public final class Updater {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 && !app.getPackageManager().canRequestPackageInstalls()) {
             InstaSave.toast(null, "Allow installing updates for InstaSave, then tap again");
-            Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            Intent settings = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     Uri.parse("package:" + app.getPackageName()))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             try {

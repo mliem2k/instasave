@@ -402,4 +402,25 @@ public class ExtensionTest {
     }
 
     // endregion
+
+    // region video resolution
+
+    @Test
+    public void savesTheHighestResolutionVideoVariant() {
+        // Three variants, offered smallest first so anything that takes the first one gets 480p.
+        Fakes.MultiResDict dict = new Fakes.MultiResDict(Arrays.<Object>asList(
+                new Fakes.Video(CDN + "480.mp4", 480),
+                new Fakes.Video(CDN + "1080.mp4", 1080),
+                new Fakes.Video(CDN + "720.mp4", 720)));
+        Fakes.Media media = new Fakes.Media("1_2", Arrays.<Object>asList(), null);
+        media.mediaDict = dict;
+
+        MediaUrlResolver.Resolved resolved = MediaUrlResolver.resolve(media);
+
+        assertNotNull(resolved);
+        assertTrue(resolved.video);
+        assertEquals(CDN + "1080.mp4", resolved.url);
+    }
+
+    // endregion
 }

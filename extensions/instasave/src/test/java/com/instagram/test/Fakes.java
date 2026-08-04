@@ -64,6 +64,12 @@ public final class Fakes {
         @Override public String getUrl() { return url; }
 
         @Override public int getWidth() { return width; }
+
+        // Obfuscated-style dimension accessors, boxed Integer with no telling name, exactly the
+        // shape videoResolutionWeight ranks by. A small type tag plus width and a derived height.
+        public Integer CEn() { return 101; }
+        public Integer DcP() { return width; }
+        public Integer Dls() { return width * 16 / 9; }
     }
 
     /** A media model: some candidates, an owner, and an id, reachable only through fields. */
@@ -182,5 +188,22 @@ public final class Fakes {
         public Holder self;
 
         public Holder(Object value) { this.value = value; }
+    }
+
+    /**
+     * A media dictionary whose videoVersions() returns several variants of different resolution.
+     * Lives under com.instagram so the resolver is willing to walk it, and exposes the video only
+     * through the accessor, never a field, matching the real dictionary.
+     */
+    public static final class MultiResDict implements MediaDictIntf {
+        private final java.util.List<Object> videos;
+
+        public MultiResDict(java.util.List<Object> videos) {
+            this.videos = videos;
+        }
+
+        public java.util.List<Object> videoVersions() {
+            return videos;
+        }
     }
 }
