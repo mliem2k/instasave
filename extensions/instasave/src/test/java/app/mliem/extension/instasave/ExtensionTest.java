@@ -423,4 +423,22 @@ public class ExtensionTest {
     }
 
     // endregion
+
+    // region settings defaults
+
+    /**
+     * Every toggle ships on by default. With no application Context captured (as in this test
+     * environment), every Settings accessor falls back to its default rather than throwing, so
+     * this is also a direct check on the fallback path, not only the value. If a future change
+     * flips one of these back to off, this is the test that catches it.
+     */
+    @Test
+    public void everySettingDefaultsToOn() {
+        assertTrue(Settings.autoUpdate());
+        assertTrue(Settings.highestQuality());
+        assertTrue(Settings.disableDoubleTapLike());
+        assertTrue(Settings.blockAds());
+    }
+
+    // endregion
 }

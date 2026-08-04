@@ -22,8 +22,8 @@ public final class Settings {
 
     private static final boolean DEFAULT_AUTO_UPDATE = true;
     private static final boolean DEFAULT_HIGHEST_QUALITY = true;
-    private static final boolean DEFAULT_DISABLE_DOUBLE_TAP_LIKE = false;
-    private static final boolean DEFAULT_BLOCK_ADS = false;
+    private static final boolean DEFAULT_DISABLE_DOUBLE_TAP_LIKE = true;
+    private static final boolean DEFAULT_BLOCK_ADS = true;
 
     private Settings() {
     }
@@ -45,14 +45,14 @@ public final class Settings {
         return p == null ? DEFAULT_HIGHEST_QUALITY : p.getBoolean(KEY_HIGHEST_QUALITY, DEFAULT_HIGHEST_QUALITY);
     }
 
-    /** When on, a double tap on a post no longer likes it. Off is Instagram's normal behaviour. */
+    /** When on (the default), a double tap on a post no longer likes it. The heart button always does. */
     public static boolean disableDoubleTapLike() {
         SharedPreferences p = prefs(null);
         return p == null ? DEFAULT_DISABLE_DOUBLE_TAP_LIKE
                 : p.getBoolean(KEY_DISABLE_DOUBLE_TAP_LIKE, DEFAULT_DISABLE_DOUBLE_TAP_LIKE);
     }
 
-    /** When on, feed and reel ad slots are removed instead of rendered. */
+    /** When on (the default), feed and reel ad slots are removed instead of rendered. */
     public static boolean blockAds() {
         SharedPreferences p = prefs(null);
         return p == null ? DEFAULT_BLOCK_ADS : p.getBoolean(KEY_BLOCK_ADS, DEFAULT_BLOCK_ADS);
@@ -63,10 +63,5 @@ public final class Settings {
         if (p != null) {
             p.edit().putBoolean(key, value).apply();
         }
-    }
-
-    static boolean getBoolean(Context context, String key, boolean fallback) {
-        SharedPreferences p = prefs(context);
-        return p == null ? fallback : p.getBoolean(key, fallback);
     }
 }

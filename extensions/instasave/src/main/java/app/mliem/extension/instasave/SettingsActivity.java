@@ -47,7 +47,7 @@ public final class SettingsActivity extends Activity {
         root.addView(toggle(
                 "Check for updates automatically",
                 "Looks at GitHub about once a day.",
-                Settings.getBoolean(this, Settings.KEY_AUTO_UPDATE, true),
+                Settings.autoUpdate(),
                 new CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(CompoundButton button, boolean checked) {
@@ -65,7 +65,7 @@ public final class SettingsActivity extends Activity {
         root.addView(toggle(
                 "Save highest quality video",
                 "Off saves a smaller video to use less data.",
-                Settings.getBoolean(this, Settings.KEY_HIGHEST_QUALITY, true),
+                Settings.highestQuality(),
                 new CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(CompoundButton button, boolean checked) {
@@ -78,7 +78,7 @@ public final class SettingsActivity extends Activity {
         root.addView(toggle(
                 "Disable double tap to like",
                 "The heart button still works.",
-                Settings.getBoolean(this, Settings.KEY_DISABLE_DOUBLE_TAP_LIKE, false),
+                Settings.disableDoubleTapLike(),
                 new CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(CompoundButton button, boolean checked) {
@@ -92,7 +92,7 @@ public final class SettingsActivity extends Activity {
                 "Block ads",
                 "Removes sponsored posts from feeds. An ad that is never inserted also never " +
                         "generates the impression tracking that goes with showing one.",
-                Settings.getBoolean(this, Settings.KEY_BLOCK_ADS, false),
+                Settings.blockAds(),
                 new CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(CompoundButton button, boolean checked) {

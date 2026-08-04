@@ -21,9 +21,9 @@ MORPHE_REPO="MorpheApp/morphe-desktop"
 
 # Patches enabled by default. "Save posts and reels (fallback)" is deliberately absent:
 # it duplicates the row that "Unlock native download" reveals. Pass it as $3 to add it.
-# Kept in sync with every patch declared `default = true`. "Save posts and reels (fallback)",
-# "Disable double tap to like" and "Block ads" are deliberately absent: all three default to off
-# in the patch bundle itself, so an install without extra args should not carry them either.
+# Kept in sync with every patch declared `default = true`. Only "Save posts and reels
+# (fallback)" is deliberately absent: it defaults to off in the patch bundle itself, because
+# enabling it alongside "Unlock native download" would show two download entries.
 DEFAULT_PATCHES=(
     "Bypass signature check"
     "Clone"
@@ -33,6 +33,8 @@ DEFAULT_PATCHES=(
     "Disable screenshot detection"
     "In-app updater"
     "Settings screen"
+    "Disable double tap to like"
+    "Block ads"
 )
 
 die() { printf '\nerror: %s\n' "$*" >&2; exit 1; }

@@ -112,14 +112,14 @@ A video post carries several encodings; the resolver saves the largest. `VideoVe
 `Integer` accessor and takes the product of the two largest, which is the pixel area whichever
 accessor is which. The settings screen can flip this to the smallest variant as a data saver.
 
-### Disable double tap to like (default off, settings screen)
+### Disable double tap to like (default on, settings screen)
 
 Instagram routes both a double tap and the heart button through the same like method, so this
 cannot simply neutralize that method or the heart button would stop working too. The patched
 method asks the extension at entry whether the current call came from a double tap, told apart by
 the gesture callback names in the call stack, and returns without liking only then.
 
-### Block ads (default off, settings screen)
+### Block ads (default on, settings screen)
 
 Removes sponsored posts from feeds and reels. One method decides whether a sponsored item is
 inserted; the patch consults the setting at its entry and, when on, forces it to answer that the
@@ -301,8 +301,10 @@ download row does not appear, since together they would produce two entries.
 - [x] Settings screen with its own launcher icon: update controls and the video quality choice.
 - [x] Highest resolution video: the largest variant is saved, ranked by obfuscated dimension
       accessors.
-- [x] Disable double tap to like, told apart from the heart button by the call stack.
-- [x] Block ads: removes sponsored posts and the impression tracking tied to showing one.
+- [x] Disable double tap to like (on by default), told apart from the heart button by the call
+      stack.
+- [x] Block ads (on by default): removes sponsored posts and the impression tracking tied to
+      showing one.
 - [x] Builds. `./gradlew :patches:build` produces `patches/build/libs/patches-0.2.0.mpp` with the
       extension dex bundled at `extensions/instasave.mpe`. 23 JVM unit tests pass.
 - [x] **All eight patches apply cleanly to Instagram 440.1.0.46.86**, with zero patch exceptions,

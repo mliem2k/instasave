@@ -16,14 +16,15 @@ import app.morphe.patcher.patch.bytecodePatch
  * top that asks the extension whether this particular call came from a double tap, and returns
  * without liking only then. The decision, and the on or off setting, live in the extension.
  *
- * Off by default, since it changes a core gesture. The toggle is on the settings screen.
+ * On by default, matching the Settings.disableDoubleTapLike() default the extension side reads.
+ * The toggle to turn it back off is on the settings screen.
  */
 @Suppress("unused")
 val disableDoubleTapLikePatch = bytecodePatch(
     name = "Disable double tap to like",
     description = "Stops a double tap on a post from liking it. The heart button still works. " +
         "Toggle it on the InstaSave settings screen.",
-    default = false
+    default = true
 ) {
     compatibleWith(COMPATIBILITY_INSTAGRAM)
 
