@@ -40,6 +40,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * dedicated single thread executor; nothing blocks the main thread, and the network is touched at
  * most once per 24 hours.
  *
+ * <p>The automatic background check in {@link #start} only posts a notification when it finds a
+ * newer build; the download itself waits for that notification's action to be tapped, since a
+ * silent check has no consent gesture of its own. {@link #checkNow}, the "check for updates now"
+ * button, downloads and installs immediately instead: the tap that triggered the check already is
+ * the consent, and {@code POST_NOTIFICATIONS} is not granted by default on a fresh install, which
+ * previously left that button announcing an update it had no way to actually deliver.
+ *
  * <p>The whole feature is silent when it cannot do anything. If the repository is private (its
  * releases API returns 404 to an unauthenticated caller), or the device is offline, or there is
  * simply no newer release, nothing is shown. A self updater that nagged about the network on
@@ -107,7 +114,10 @@ public final class Updater {
             @Override
             public void run() {
                 try {
-                    checkForUpdate(app, false);
+                    UpdateInfo info = findUpdate(app, false);
+                    if (info != null) {
+                        notifyUpdate(app, info.tag, info.apkUrl);
+                    }
                 } catch (Throwable t) {
                     // Never surfaced. A failed check is not the user's problem.
                     InstaSave.log("update check failed", t);
@@ -119,6 +129,14 @@ public final class Updater {
     /**
      * Checks now, on demand from the settings screen. Ignores the automatic-check preference and
      * the once-a-day debounce, and tells the user the outcome either way, since they asked.
+     *
+     * <p>When a newer release exists this downloads and installs it directly, rather than posting
+     * a notification and waiting for it to be tapped. The automatic path in {@link #start} keeps
+     * the notification, since a silent background check has no consent gesture of its own and
+     * needs one before it starts pulling a large file. Tapping "check for updates now" already is
+     * that gesture, so requiring a second one, through a notification whose permission is not
+     * granted on a fresh install, only left this button unable to do anything on the exact path it
+     * exists for.
      */
     public static void checkNow(Context context) {
         if (context == null) {
@@ -133,9 +151,11 @@ public final class Updater {
             @Override
             public void run() {
                 try {
-                    boolean offered = checkForUpdate(app, true);
-                    if (!offered) {
+                    UpdateInfo info = findUpdate(app, true);
+                    if (info == null) {
                         InstaSave.toast(app, "InstaSave is up to date");
+                    } else {
+                        beginDownloadAndInstall(app, info.apkUrl, info.tag);
                     }
                 } catch (Throwable t) {
                     InstaSave.log("manual update check failed", t);
@@ -147,15 +167,26 @@ public final class Updater {
 
     // region check
 
+    /** The release tag and download URL of a newer build, once one has been found. */
+    private static final class UpdateInfo {
+        final String tag;
+        final String apkUrl;
+
+        UpdateInfo(String tag, String apkUrl) {
+            this.tag = tag;
+            this.apkUrl = apkUrl;
+        }
+    }
+
     /**
      * @param force ignore the once-a-day debounce (a manual check from settings)
-     * @return true when a newer release was found and offered
+     * @return the newer release's tag and APK URL, or null when there is none
      */
-    private static boolean checkForUpdate(Context app, boolean force) throws Exception {
+    private static UpdateInfo findUpdate(Context app, boolean force) throws Exception {
         long now = System.currentTimeMillis();
         long last = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_LAST_CHECK, 0L);
         if (!force && now - last < CHECK_INTERVAL_MS) {
-            return false;
+            return null;
         }
 
         HttpURLConnection connection = (HttpURLConnection) new URL(LATEST_RELEASE_API).openConnection();
@@ -172,12 +203,12 @@ public final class Updater {
                 // launch, then stay silent.
                 InstaSave.log("release API returned " + code + " (private repo or no release)");
                 markChecked(app, now);
-                return false;
+                return null;
             }
             if (code < 200 || code > 299) {
                 // Transient. Do NOT mark checked, so the next launch retries.
                 InstaSave.log("release API HTTP " + code);
-                return false;
+                return null;
             }
 
             String body = readAll(connection.getInputStream());
@@ -187,13 +218,9 @@ public final class Updater {
             String tag = json.optString("tag_name", "");
             String apkUrl = firstApkAssetUrl(json.optJSONArray("assets"));
             if (tag.isEmpty() || apkUrl == null) {
-                return false;
+                return null;
             }
-            if (isNewer(tag, currentVersion())) {
-                notifyUpdate(app, tag, apkUrl);
-                return true;
-            }
-            return false;
+            return isNewer(tag, currentVersion()) ? new UpdateInfo(tag, apkUrl) : null;
         } finally {
             connection.disconnect();
         }
@@ -346,12 +373,21 @@ public final class Updater {
     }
 
     private static void onDownloadRequested(final Context app, Intent intent) {
-        final String url = intent.getStringExtra(EXTRA_APK_URL);
-        final String tag = intent.getStringExtra(EXTRA_TAG);
+        String url = intent.getStringExtra(EXTRA_APK_URL);
+        String tag = intent.getStringExtra(EXTRA_TAG);
         if (url == null) {
             cancelNotification(app);
             return;
         }
+        beginDownloadAndInstall(app, url, tag);
+    }
+
+    /**
+     * Shared by the notification's "Download and install" action and by {@link #checkNow}, which
+     * calls this directly instead of waiting for a tap. Cancelling a notification that was never
+     * posted is a no-op, so this is safe to call from either path.
+     */
+    private static void beginDownloadAndInstall(final Context app, final String url, final String tag) {
         // The "install unknown apps" grant is per source. If it is missing, send the user to
         // grant it rather than letting the install silently do nothing. Leave the notification up
         // so they can tap it again after granting; dismissing it here would make "tap again"
@@ -372,7 +408,8 @@ public final class Updater {
         if (!busy.compareAndSet(false, true)) {
             return;
         }
-        // Committed to the download now, so the notification has served its purpose.
+        // Committed to the download now, so the notification (if one exists) has served its
+        // purpose.
         cancelNotification(app);
         InstaSave.toast(null, "Downloading InstaSave " + stripV(tag == null ? "" : tag));
         IO.execute(new Runnable() {
