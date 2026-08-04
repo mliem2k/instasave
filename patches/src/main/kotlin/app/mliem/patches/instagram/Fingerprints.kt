@@ -161,6 +161,28 @@ internal object ImageUrlBindFingerprint : Fingerprint(
 )
 
 /**
+ * The accessor that returns a user's handle, so a saved file can be named after the account.
+ *
+ * Instagram exposes no `getUsername()` anywhere in the app; on 440 the getter is an obfuscated
+ * name on `com.instagram.user.model.User` (`A05`), so it cannot be called by name at runtime.
+ * What is stable is the GraphQL field id compiled into it as a literal, which is what this
+ * matches. The patch then hands the resolved name to the extension, so the obfuscated name is
+ * discovered per build instead of being hardcoded.
+ *
+ * The defining class is spelled in full because several unrelated `User` classes exist (direct
+ * messaging protobuf models, a Meta credentials one), and only this one is the media author.
+ */
+internal object UserUsernameGetterFingerprint : Fingerprint(
+    definingClass = "Lcom/instagram/user/model/User;",
+    returnType = "Ljava/lang/String;",
+    parameters = emptyList(),
+    filters = listOf(
+        // The username field id. Negative, and written -0xfd6772a in smali.
+        literal(-265713450)
+    )
+)
+
+/**
  * The screenshot-detection observer callback for stories, reels and disappearing DMs.
  *
  * When Android reports a screenshot, Instagram's detector posts a callback to each registered

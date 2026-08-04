@@ -43,7 +43,27 @@ public final class MediaUrlResolver {
     private static final String IMAGE_URL_INTERFACE = "ImageUrl";
     private static final String VIDEO_VERSION_INTERFACE = "VideoVersion";
 
+    /** The media author's type. Unobfuscated, so it is matched exactly. */
+    private static final String USER_CLASS = "com.instagram.user.model.User";
+
+    /**
+     * Name of the method on {@code User} that returns the account handle, injected by the patch.
+     *
+     * <p>Instagram exposes no {@code getUsername()} anywhere, and the real getter carries an
+     * obfuscated name that changes between releases, so it cannot be called by name from here.
+     * The patch resolves it at build time by a stable field id and passes the name across, which
+     * keeps a version specific detail out of this code. Null means the patch could not resolve
+     * it, in which case files are saved without an account name rather than with a wrong one.
+     */
+    private static volatile String usernameAccessor;
+
     private MediaUrlResolver() {
+    }
+
+    /** Injected once at startup by the patch. */
+    public static void setUsernameAccessor(String methodName) {
+        usernameAccessor = methodName;
+        InstaSave.log("username accessor resolved: " + methodName);
     }
 
     /** A single ranked media URL together with whatever metadata came with it. */
@@ -99,16 +119,22 @@ public final class MediaUrlResolver {
             InstaSave.log("resolve walk aborted", t);
         }
 
-        // Videos live behind a native-tree accessor, not a field, so the field walk alone can
-        // only ever find the cover image. If it found no video, do the second pass that invokes
-        // the media dict's accessors. Only paid on a tap, and only when a video was not already
-        // in a plain field.
-        if (!walk.hasVideo()) {
+        // Neither the video nor the author is a plain field: both live behind native-tree
+        // accessors, which is why a field-only walk finds the cover image and no account name.
+        // Invoke those accessors for whichever of the two is still missing. Paid only on a tap.
+        boolean wantVideo = !walk.hasVideo();
+        boolean wantUser = walk.username == null;
+        if (wantVideo || wantUser) {
             try {
-                walk.materializeVideosFromDicts();
+                walk.materializeFromDicts(wantVideo, wantUser);
             } catch (Throwable t) {
-                InstaSave.log("pando video materialize aborted", t);
+                InstaSave.log("media dict materialize aborted", t);
             }
+        }
+        try {
+            walk.resolveUsername();
+        } catch (Throwable t) {
+            InstaSave.log("username resolve aborted", t);
         }
 
         List<Candidate> ranked = walk.rank();
@@ -160,9 +186,13 @@ public final class MediaUrlResolver {
         private final List<Candidate> videos = new ArrayList<>();
         private final Set<String> seenUrls = new HashSet<>();
 
-        // Pando/LiveTree media dictionaries met during the field walk. Their video-version list
-        // is not a field, so it is only materialized in a second pass (materializeVideosFromDicts).
+        // Pando/LiveTree media dictionaries met during the field walk. Neither the video-version
+        // list nor the author is a field, so both are only materialized in a second pass
+        // (materializeFromDicts).
         private final List<Object> mediaDicts = new ArrayList<>();
+
+        /** Candidate authors. A post can carry several (author, coauthors, tagged users). */
+        private final List<Object> users = new ArrayList<>();
 
         String username;
         String mediaId;
@@ -232,6 +262,10 @@ public final class MediaUrlResolver {
             harvestMetadata(value, type);
             if (isMediaDict(type)) {
                 mediaDicts.add(value);
+            }
+            if (USER_CLASS.equals(type.getName())) {
+                // Some surfaces hold the author directly rather than behind the dict.
+                users.add(value);
             }
 
             for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
@@ -323,7 +357,8 @@ public final class MediaUrlResolver {
          * are pure, so this is safe; it is not invoking arbitrary getters across the graph. The
          * cost is bounded and paid only on a user tap, and only when no video was field-reachable.
          */
-        void materializeVideosFromDicts() {
+        void materializeFromDicts(boolean wantVideo, boolean wantUser) {
+            boolean stillWantVideo = wantVideo;
             for (Object dict : mediaDicts) {
                 for (Class<?> current = dict.getClass();
                         current != null && current != Object.class;
@@ -336,8 +371,13 @@ public final class MediaUrlResolver {
                     }
                     for (Method method : methods) {
                         if (method.getParameterCount() != 0
-                                || Modifier.isStatic(method.getModifiers())
-                                || !List.class.isAssignableFrom(method.getReturnType())) {
+                                || Modifier.isStatic(method.getModifiers())) {
+                            continue;
+                        }
+                        Class<?> returnType = method.getReturnType();
+                        boolean listAccessor = stillWantVideo && List.class.isAssignableFrom(returnType);
+                        boolean userAccessor = wantUser && USER_CLASS.equals(returnType.getName());
+                        if (!listAccessor && !userAccessor) {
                             continue;
                         }
                         Object result;
@@ -345,6 +385,15 @@ public final class MediaUrlResolver {
                             method.setAccessible(true);
                             result = method.invoke(dict);
                         } catch (Throwable t) {
+                            continue;
+                        }
+                        if (result == null) {
+                            continue;
+                        }
+                        if (userAccessor) {
+                            // Several of these exist (author, coauthors, tagged users). Collect
+                            // them all; picking the actual owner happens in resolveUsername.
+                            users.add(result);
                             continue;
                         }
                         if (!(result instanceof List)) {
@@ -371,11 +420,72 @@ public final class MediaUrlResolver {
                             }
                         }
                         if (hasVideo()) {
+                            // Stop looking for videos, but keep going so the author accessors on
+                            // this dict are still visited.
+                            stillWantVideo = false;
+                            if (!wantUser) {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /**
+         * Picks the account the media belongs to, out of every user object the dict handed back.
+         *
+         * <p>A post can carry several: the author, coauthors, tagged users. They are indistinguishable
+         * by accessor name, since those are obfuscated. The media id disambiguates them exactly:
+         * Instagram formats it as {@code mediaPk_ownerPk}, and {@code User.getId()} is one of the
+         * few unobfuscated methods, so the author is the user whose id equals that suffix.
+         *
+         * <p>When there is no media id to match against, fall back to the first user that yields
+         * a plausible handle, which is the author for ordinary single author media.
+         */
+        private void resolveUsername() {
+            if (username != null || users.isEmpty()) {
+                return;
+            }
+
+            String ownerId = null;
+            if (mediaId != null) {
+                int separator = mediaId.indexOf('_');
+                if (separator > 0 && separator < mediaId.length() - 1) {
+                    ownerId = mediaId.substring(separator + 1);
+                }
+            }
+
+            if (ownerId != null) {
+                for (Object user : users) {
+                    if (ownerId.equals(asString(invokeNoArg(user, "getId")))) {
+                        String handle = handleOf(user);
+                        if (handle != null) {
+                            username = handle;
                             return;
                         }
                     }
                 }
             }
+
+            for (Object user : users) {
+                String handle = handleOf(user);
+                if (handle != null) {
+                    username = handle;
+                    return;
+                }
+            }
+        }
+
+        /** Reads the handle off a user object, via the accessor name the patch resolved. */
+        private String handleOf(Object user) {
+            String accessor = usernameAccessor;
+            String handle = accessor != null ? asString(invokeNoArg(user, accessor)) : null;
+            if (handle == null) {
+                // Only reachable on a build where the patch could not resolve the accessor.
+                handle = asString(invokeNoArg(user, "getUsername"));
+            }
+            return looksLikeUsername(handle) ? handle : null;
         }
 
         /** Opportunistically picks up a username and a media id for the saved file name. */

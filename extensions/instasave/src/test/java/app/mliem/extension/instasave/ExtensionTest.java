@@ -333,4 +333,73 @@ public class ExtensionTest {
     }
 
     // endregion
+
+    // region account naming
+
+    /**
+     * Builds a dict carrying both the author and a tagged user, reachable only through accessors,
+     * plus a video so the media is realistic.
+     */
+    private static Fakes.Media mediaWithAuthorAndTaggedUser(String mediaId,
+                                                            String authorId, String authorHandle,
+                                                            String taggedId, String taggedHandle) {
+        Fakes.MediaDict dict = new Fakes.MediaDict(CDN + "clip.mp4", 720,
+                new Fakes.Image(CDN + "cover.jpg", 100, 100));
+        dict.author = new com.instagram.user.model.User(authorId, authorHandle);
+        // The tagged user is put where the field walk finds it, and the author only behind a dict
+        // accessor. The walk runs first, so the tagged user is deterministically the FIRST
+        // candidate. Anything that just takes the first user it sees therefore gets the wrong
+        // answer, which is what stops these tests passing for the wrong reason.
+        Fakes.Media media = new Fakes.Media(mediaId, Arrays.<Object>asList(),
+                new com.instagram.user.model.User(taggedId, taggedHandle));
+        media.mediaDict = dict;
+        return media;
+    }
+
+    @Test
+    public void namesTheFileAfterTheAuthorNotATaggedUser() {
+        // The media id is mediaPk_ownerPk, so the author is the user whose id is that suffix.
+        // Accessor order is not guaranteed by reflection, which is exactly why the id decides.
+        MediaUrlResolver.setUsernameAccessor("A05");
+        Fakes.Media media = mediaWithAuthorAndTaggedUser(
+                "17912345678901234_999", "999", "realauthor", "111", "taggedperson");
+
+        MediaUrlResolver.Resolved resolved = MediaUrlResolver.resolve(media);
+
+        assertNotNull(resolved);
+        assertEquals("realauthor", resolved.username);
+        assertTrue(Downloader.buildFilename(resolved).startsWith("realauthor_video_"));
+    }
+
+    @Test
+    public void fallsBackToASingleAuthorWhenTheMediaIdCannotDisambiguate() {
+        // No owner suffix to match on, so the only user present is the sensible answer.
+        MediaUrlResolver.setUsernameAccessor("A05");
+        Fakes.MediaDict dict = new Fakes.MediaDict(CDN + "clip.mp4", 720, null);
+        dict.author = new com.instagram.user.model.User("999", "soleauthor");
+        Fakes.Media media = new Fakes.Media("no-id-here", Arrays.<Object>asList(), null);
+        media.mediaDict = dict;
+
+        MediaUrlResolver.Resolved resolved = MediaUrlResolver.resolve(media);
+
+        assertNotNull(resolved);
+        assertEquals("soleauthor", resolved.username);
+    }
+
+    @Test
+    public void savesWithoutAnAccountRatherThanAWrongOneWhenTheAccessorIsUnresolved() {
+        // The real User exposes no getUsername, so with no accessor injected there is no way to
+        // read a handle. The file must still save, just unnamed.
+        MediaUrlResolver.setUsernameAccessor(null);
+        Fakes.Media media = mediaWithAuthorAndTaggedUser(
+                "17912345678901234_999", "999", "realauthor", "111", "taggedperson");
+
+        MediaUrlResolver.Resolved resolved = MediaUrlResolver.resolve(media);
+
+        assertNotNull(resolved);
+        assertNull(resolved.username);
+        assertTrue(Downloader.buildFilename(resolved).startsWith("video_"));
+    }
+
+    // endregion
 }

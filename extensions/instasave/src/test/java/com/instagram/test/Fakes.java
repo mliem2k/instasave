@@ -138,6 +138,23 @@ public final class Fakes {
             return Collections.<Object>singletonList(new Video(new String(videoUrl), videoWidth));
         }
 
+        /**
+         * Author and tagged user, each behind its own zero-arg accessor returning the author type,
+         * exactly as the real dictionary exposes them. Neither is a field, so only invoking these
+         * reaches them. The accessors are deliberately indistinguishable by name, because the real
+         * ones are obfuscated: telling the author from the tagged user is the resolver's job.
+         */
+        public com.instagram.user.model.User author;
+        public com.instagram.user.model.User taggedUser;
+
+        public com.instagram.user.model.User authorAccessor() {
+            return author;
+        }
+
+        public com.instagram.user.model.User taggedUserAccessor() {
+            return taggedUser;
+        }
+
         /** Zero-arg but returns a String, not a List: the second pass must skip it by return type. */
         public String coverImageId() {
             nonListAccessorInvoked = true;
