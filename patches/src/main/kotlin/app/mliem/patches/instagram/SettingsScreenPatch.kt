@@ -17,6 +17,25 @@ private const val SETTINGS_ACTIVITY = "app.mliem.extension.instasave.SettingsAct
  * the "check now" button can drive an install. The class name is fully qualified, so the package
  * rename the clone patch performs does not affect it.
  *
+ * Declares its own {@code taskAffinity} and {@code singleTask} launch mode. Neither Instagram's
+ * main activity nor this one set an explicit affinity by default, so both would otherwise fall
+ * back to the same implicit, package-wide one; tapping either launcher icon would then just
+ * resume whichever task already existed instead of switching to the one that was actually tapped,
+ * "stuck" on the other screen until the app was force-stopped. Instagram's own manifest already
+ * gives several of its auxiliary activities (call, share-handler, PiP) their own class-named
+ * affinity for exactly this reason; this mirrors that pattern rather than inventing a new one.
+ *
+ * Also declares {@code resizeableActivity="false"}, since this screen has no use for real
+ * split screen resizing on a phone. It does not, and cannot, remove the small system drawn
+ * caption bar that appears above this screen specifically when the device itself is in desktop
+ * windowing mode (an external display, a large screen, or an emulator configured for it): Google's
+ * own adaptive apps documentation states that bar is drawn unconditionally for every window in
+ * that mode and is not something an app can opt out of, and Android 16 additionally ignores
+ * {@code resizeableActivity} outright on large screens. Instagram's own task never shows it only
+ * because Instagram never becomes the distinct root of its own task the way this screen does.
+ * Ordinary handheld use, which is what this app runs in, is not desktop windowing mode and never
+ * shows it.
+ *
  * Idempotent: a manifest that already declares this activity is left untouched.
  */
 internal val settingsScreenPatch = resourcePatch(
@@ -51,6 +70,11 @@ internal val settingsScreenPatch = resourcePatch(
             // The dark system theme, so the screen does not inherit Instagram's own styling and
             // matches the explicit dark colors SettingsActivity sets on its own views.
             activity.setAttribute("android:theme", "@android:style/Theme.DeviceDefault")
+            // A unique affinity plus singleTask keeps this in its own task: launching it never
+            // resumes Instagram's task, and launching Instagram never resumes this one.
+            activity.setAttribute("android:taskAffinity", SETTINGS_ACTIVITY)
+            activity.setAttribute("android:launchMode", "singleTask")
+            activity.setAttribute("android:resizeableActivity", "false")
 
             val filter = document.createElement("intent-filter")
             val action = document.createElement("action")

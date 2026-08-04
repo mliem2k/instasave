@@ -123,6 +123,15 @@ toast confirming it, gives a single unambiguous moment of "this took". "Check fo
 an action rather than a preference and still runs immediately, since there is nothing for it to
 save.
 
+Styled to sit next to Instagram's own dark mode rather than look like a bolted on utility screen:
+a true black background, a back arrow and bold title in place of a floating heading, thin dividers
+instead of boxed cards, and Instagram blue on the switches and the Save button.
+
+Declared with its own `taskAffinity` and `singleTask` launch mode, in its own task, separate from
+Instagram's. Without that, both launcher icons fall back to the same implicit, package wide task
+affinity, and switching between them just resumes whichever task already existed instead of the
+one actually tapped, stuck on the other screen until the app was force stopped.
+
 ### Highest resolution video (always on)
 
 A video post carries several encodings; the resolver saves the largest. `VideoVersionIntf` has no
@@ -317,8 +326,10 @@ there, so running both never produces two.
       the cover still. Unit tested against a fake that reproduces the native-accessor shape.
 - [x] Disable screenshot detection.
 - [x] In-app updater from GitHub Releases, with a stable signing key so updates install in place.
-- [x] Settings screen with its own launcher icon, a dark theme, and an explicit Save button
-      rather than writing on every toggle flip.
+- [x] Settings screen with its own launcher icon, styled like Instagram's own dark mode, and an
+      explicit Save button rather than writing on every toggle flip. Declared with its own
+      taskAffinity and singleTask so switching between it and Instagram never gets stuck on
+      whichever one was already open.
 - [x] Highest resolution video: the largest variant is saved, ranked by obfuscated dimension
       accessors.
 - [x] Disable double tap to like (on by default), told apart from the heart button by the call
