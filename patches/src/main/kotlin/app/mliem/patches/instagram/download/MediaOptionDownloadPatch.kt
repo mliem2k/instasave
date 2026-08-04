@@ -16,26 +16,31 @@ import app.morphe.patcher.patch.bytecodePatch
 
 /**
  * Adds a download entry to the feed post and reel overflow menus, and handles taps on it here
- * rather than deferring to Instagram.
+ * rather than deferring to Instagram, for whichever posts `unlockNativeDownloadPatch` does not
+ * cover on its own.
  *
- * This is the fallback for builds where `unlockNativeDownloadPatch` does not light up Instagram's
- * own row. Prefer that patch: it needs no extension code, resolves no URLs, and writes no files,
- * so there is far less of it to break. Enable this one only if the native row does not appear.
+ * That patch forces a boolean flag read that is keyed only by a parameter id, with no Media in
+ * scope at all, so it cannot express "except for a multi image post". Instagram's own decision to
+ * leave a multi image carousel without a download row, if that is what is happening, is baked in
+ * somewhere neither of the two forced flags can reach. Rather than trace that decision through a
+ * very large, heavily obfuscated menu builder for one more anchor, this patch is a general,
+ * version resilient backstop: it appends the download entry to the SAME allowlist Instagram's own
+ * native flow renders from, wherever it finds it missing, single media or carousel alike.
  *
- * Instagram already models the row as a constant of the unobfuscated enum
- * `com.instagram.feed.media.mediaoption.MediaOption$Option`; it is simply filtered out of the
- * allowlist the menu is built from. So the injection appends a value to a list rather than
- * constructing a menu row, and Instagram renders it with its own styling.
- *
- * Off by default, because enabling both this and the native unlock would show two download rows.
+ * Enabling this alongside `unlockNativeDownloadPatch` is deliberate, not a duplicate risk: the
+ * injected code only appends the constant when the list does not already contain it
+ * (`MediaOptions.addDownloadOption`), and `MediaOption$Option.DOWNLOAD` is a single enum instance
+ * with default, reference equality `equals()`, so `List.contains` correctly detects Instagram's
+ * own entry when the native unlock already put it there. Where the native row already appears,
+ * this is a no-op; where it does not, this is what actually gives the post a download option.
  */
 @Suppress("unused")
 val mediaOptionDownloadPatch = bytecodePatch(
     name = "Save posts and reels (fallback)",
-    description = "Adds a download entry to the post and reel menus and saves the media with " +
-        "InstaSave's own downloader. Only needed when \"Unlock native download\" does not work; " +
-        "enabling both shows two entries.",
-    default = false
+    description = "Adds a download entry to the post and reel menus wherever Instagram's own row " +
+        "does not appear, most notably on multi image posts. Safe to run alongside " +
+        "\"Unlock native download\"; it does not duplicate an entry that is already there.",
+    default = true
 ) {
     compatibleWith(COMPATIBILITY_INSTAGRAM)
 

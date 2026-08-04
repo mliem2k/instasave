@@ -48,8 +48,9 @@ internal val settingsScreenPatch = resourcePatch(
             activity.setAttribute("android:label", "InstaSave settings")
             // A launcher activity must be explicitly exported on modern Android.
             activity.setAttribute("android:exported", "true")
-            // A plain system theme, so the screen does not inherit Instagram's own styling.
-            activity.setAttribute("android:theme", "@android:style/Theme.DeviceDefault.Light")
+            // The dark system theme, so the screen does not inherit Instagram's own styling and
+            // matches the explicit dark colors SettingsActivity sets on its own views.
+            activity.setAttribute("android:theme", "@android:style/Theme.DeviceDefault")
 
             val filter = document.createElement("intent-filter")
             val action = document.createElement("action")

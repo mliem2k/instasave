@@ -74,12 +74,24 @@ URL, one seam covering every image the app renders. That yields a long press han
 nothing else claims (`isLongClickable()` is false), plus a short history of recently bound URLs
 that the resolver falls back to when a tap handler captured nothing reachable.
 
-### 4. Save posts and reels, fallback (default **off**)
+### 4. Save posts and reels, fallback (default on)
 
-For builds where the native row does not appear. Instagram models the row as a constant of the
-unobfuscated enum `MediaOption$Option` and filters it out of an allowlist, so this appends a
-value to a list rather than building a row, and handles the tap with InstaSave's own downloader.
-Off by default because enabling it together with patch 1 would show two entries.
+Patch 1 forces a boolean flag read keyed only by a parameter id, with no `Media` in scope, so it
+cannot express "except for a multi image post". Whatever decision leaves a carousel without a
+native download row lives somewhere that flag cannot reach. Rather than trace it through Instagram's
+enormous, obfuscated menu builder for one more anchor, this patch is a general backstop: it appends
+the download entry to the same allowlist Instagram renders from, wherever it finds it missing,
+single media or carousel alike.
+
+Running alongside patch 1 is deliberate, not a duplicate risk. The injected code only appends when
+the list does not already contain the entry, and `MediaOption$Option.DOWNLOAD` is a single enum
+instance with default, reference equality `equals()`, so a plain `List.contains` correctly detects
+Instagram's own entry when patch 1 already put it there. Where the native row already appears,
+this is a no-op; where it does not, this is what actually gives the post a download option.
+
+Known gap: which candidate is saved for a multi image post is not yet aware of which slide is on
+screen; it currently saves the highest resolution candidate found, not necessarily the visible
+one. Locating the carousel position accessor is unresearched.
 
 Two more patches ship alongside the save actions:
 
@@ -100,10 +112,16 @@ from the installed app. It is silent when the releases are not publicly reachabl
 ### Settings screen (default on)
 
 A patched Instagram has no place to add a settings row without fingerprinting its own obfuscated
-UI, so InstaSave's settings are a standalone Activity with their own launcher icon. The screen
-holds the update controls (an automatic-check toggle, a check-now button, the installed version)
-and the video quality choice. It is built in code, since a merged extension ships no layout
-resources, and declared by a manifest resource patch.
+UI, so InstaSave's settings are a standalone Activity with their own launcher icon. It is built in
+code, since a merged extension ships no layout resources, declared by a manifest resource patch,
+and follows the dark system theme (`Theme.DeviceDefault`) rather than Instagram's own styling.
+
+Every toggle changes only the on screen switch; nothing is written until the Save button, fixed at
+the bottom of the screen, is tapped. Toggling writes on every flip gave no feedback that anything
+had happened, which is exactly what read as "the setting isn't applied". One Save action, with a
+toast confirming it, gives a single unambiguous moment of "this took". "Check for updates now" is
+an action rather than a preference and still runs immediately, since there is nothing for it to
+save.
 
 ### Highest resolution video (always on)
 
@@ -283,8 +301,9 @@ Patching the base APK alone succeeds and produces a signed file that then fails 
 Add `--continue-on-error` when trying a new Instagram version: patching then reports every
 fingerprint that failed in one run instead of stopping at the first.
 
-Start with `Unlock native download`. Only enable `Save posts and reels (fallback)` if the
-download row does not appear, since together they would produce two entries.
+Enable `Unlock native download` and `Save posts and reels (fallback)` together; both are on by
+default in `tools/build_apk.sh`. The fallback only appends its entry where one is not already
+there, so running both never produces two.
 
 ## Status
 
@@ -298,13 +317,19 @@ download row does not appear, since together they would produce two entries.
       the cover still. Unit tested against a fake that reproduces the native-accessor shape.
 - [x] Disable screenshot detection.
 - [x] In-app updater from GitHub Releases, with a stable signing key so updates install in place.
-- [x] Settings screen with its own launcher icon: update controls and the video quality choice.
+- [x] Settings screen with its own launcher icon, a dark theme, and an explicit Save button
+      rather than writing on every toggle flip.
 - [x] Highest resolution video: the largest variant is saved, ranked by obfuscated dimension
       accessors.
 - [x] Disable double tap to like (on by default), told apart from the heart button by the call
       stack.
 - [x] Block ads (on by default): removes sponsored posts and the impression tracking tied to
       showing one.
+- [x] Multi image posts get a download entry even where Instagram's native row does not appear,
+      via the fallback patch running by default alongside the native unlock, guarded against
+      duplicating an entry that is already there.
+- [ ] Which carousel slide is saved is not yet aware of which one is on screen; the highest
+      resolution candidate found is saved regardless of position.
 - [x] Builds. `./gradlew :patches:build` produces `patches/build/libs/patches-0.2.0.mpp` with the
       extension dex bundled at `extensions/instasave.mpe`. 23 JVM unit tests pass.
 - [x] **All eight patches apply cleanly to Instagram 440.1.0.46.86**, with zero patch exceptions,
