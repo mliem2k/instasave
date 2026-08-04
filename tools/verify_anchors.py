@@ -85,26 +85,34 @@ class FingerprintSpec:
 
 # region parsing Fingerprints.kt
 
+def _balanced_parens(source: str, open_paren_index: int) -> str:
+    """Content between a `(` at the given index and its matching `)`, quotes respected so a
+    parenthesis inside a string literal (e.g. an anchor like "...DETOUR_getX()") does not end
+    the match early."""
+    depth = 1
+    index = open_paren_index + 1
+    start = index
+    while index < len(source) and depth > 0:
+        char = source[index]
+        if char == '"':
+            index += 1
+            while index < len(source) and source[index] != '"':
+                index += 2 if source[index] == "\\" else 1
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        index += 1
+    return source[start:index - 1]
+
+
 def _split_objects(source: str) -> list[tuple[str, str]]:
     """Yields (objectName, bodyText) for each `object X : Fingerprint(...)` declaration."""
     objects = []
     for match in re.finditer(r"object\s+(\w+)\s*:\s*Fingerprint\s*\(", source):
         name = match.group(1)
-        start = match.end()  # just past the opening paren
-        depth = 1
-        index = start
-        while index < len(source) and depth > 0:
-            char = source[index]
-            if char == '"':  # skip string literals so parens inside them do not count
-                index += 1
-                while index < len(source) and source[index] != '"':
-                    index += 2 if source[index] == "\\" else 1
-            elif char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-            index += 1
-        objects.append((name, source[start:index - 1]))
+        body = _balanced_parens(source, match.end() - 1)
+        objects.append((name, body))
     return objects
 
 
@@ -130,9 +138,12 @@ def parse_fingerprints(path: Path) -> list[FingerprintSpec]:
                 seen.add((kind, value))
                 spec.anchors.append(Anchor(kind=kind, value=value))
 
-        # strings = listOf("a", "b")
-        for block in re.finditer(r"strings\s*=\s*listOf\s*\(([^)]*)\)", body, re.S):
-            for literal in re.finditer(r'"((?:[^"\\]|\\.)*)"', block.group(1)):
+        # strings = listOf("a", "b"). The listOf(...) content is scanned with balanced parens
+        # respecting quotes, not [^)]*, because an anchor can itself contain parentheses, e.g.
+        # "LOCATION_MANAGER_DETOUR_getLastKnownLocation()".
+        for start in re.finditer(r"strings\s*=\s*listOf\s*\(", body):
+            content = _balanced_parens(body, start.end() - 1)
+            for literal in re.finditer(r'"((?:[^"\\]|\\.)*)"', content):
                 add("string", literal.group(1).replace('\\"', '"'))
 
         # literal(1234L)

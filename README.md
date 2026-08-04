@@ -97,6 +97,37 @@ a "Download and install" action driven by the system `PackageInstaller`. It rest
 sharing one signing key (see Building), because Android rejects an update whose signature differs
 from the installed app. It is silent when the releases are not publicly reachable.
 
+### Settings screen (default on)
+
+A patched Instagram has no place to add a settings row without fingerprinting its own obfuscated
+UI, so InstaSave's settings are a standalone Activity with their own launcher icon. The screen
+holds the update controls (an automatic-check toggle, a check-now button, the installed version)
+and the video quality choice. It is built in code, since a merged extension ships no layout
+resources, and declared by a manifest resource patch.
+
+### Highest resolution video (always on)
+
+A video post carries several encodings; the resolver saves the largest. `VideoVersionIntf` has no
+`getWidth`/`getHeight`, only obfuscated `Integer` accessors, so the pick reads every zero-arg
+`Integer` accessor and takes the product of the two largest, which is the pixel area whichever
+accessor is which. The settings screen can flip this to the smallest variant as a data saver.
+
+### Disable double tap to like (default off, settings screen)
+
+Instagram routes both a double tap and the heart button through the same like method, so this
+cannot simply neutralize that method or the heart button would stop working too. The patched
+method asks the extension at entry whether the current call came from a double tap, told apart by
+the gesture callback names in the call stack, and returns without liking only then.
+
+### Block ads (default off, settings screen)
+
+Removes sponsored posts from feeds and reels. One method decides whether a sponsored item is
+inserted; the patch consults the setting at its entry and, when on, forces it to answer that the
+item does not qualify. Nothing is inserted, so nothing renders, and the impression tracking that
+goes with rendering an ad never fires either. Scope, stated plainly: this is ad insertion and the
+tracking tied to it, not Instagram's general telemetry, which has no comparable single choke point
+in this app for a bytecode patch to neutralize wholesale.
+
 ## The video fix, and why saving used to give a still
 
 Saving a video story, reel or post used to save a still frame. The cause is not obfuscation, it is
@@ -267,6 +298,11 @@ download row does not appear, since together they would produce two entries.
       the cover still. Unit tested against a fake that reproduces the native-accessor shape.
 - [x] Disable screenshot detection.
 - [x] In-app updater from GitHub Releases, with a stable signing key so updates install in place.
+- [x] Settings screen with its own launcher icon: update controls and the video quality choice.
+- [x] Highest resolution video: the largest variant is saved, ranked by obfuscated dimension
+      accessors.
+- [x] Disable double tap to like, told apart from the heart button by the call stack.
+- [x] Block ads: removes sponsored posts and the impression tracking tied to showing one.
 - [x] Builds. `./gradlew :patches:build` produces `patches/build/libs/patches-0.2.0.mpp` with the
       extension dex bundled at `extensions/instasave.mpe`. 23 JVM unit tests pass.
 - [x] **All eight patches apply cleanly to Instagram 440.1.0.46.86**, with zero patch exceptions,

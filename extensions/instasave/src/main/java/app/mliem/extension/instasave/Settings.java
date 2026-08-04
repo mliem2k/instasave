@@ -17,9 +17,13 @@ public final class Settings {
 
     static final String KEY_AUTO_UPDATE = "auto_update";
     static final String KEY_HIGHEST_QUALITY = "highest_quality";
+    static final String KEY_DISABLE_DOUBLE_TAP_LIKE = "disable_double_tap_like";
+    static final String KEY_BLOCK_ADS = "block_ads";
 
     private static final boolean DEFAULT_AUTO_UPDATE = true;
     private static final boolean DEFAULT_HIGHEST_QUALITY = true;
+    private static final boolean DEFAULT_DISABLE_DOUBLE_TAP_LIKE = false;
+    private static final boolean DEFAULT_BLOCK_ADS = false;
 
     private Settings() {
     }
@@ -39,6 +43,19 @@ public final class Settings {
     public static boolean highestQuality() {
         SharedPreferences p = prefs(null);
         return p == null ? DEFAULT_HIGHEST_QUALITY : p.getBoolean(KEY_HIGHEST_QUALITY, DEFAULT_HIGHEST_QUALITY);
+    }
+
+    /** When on, a double tap on a post no longer likes it. Off is Instagram's normal behaviour. */
+    public static boolean disableDoubleTapLike() {
+        SharedPreferences p = prefs(null);
+        return p == null ? DEFAULT_DISABLE_DOUBLE_TAP_LIKE
+                : p.getBoolean(KEY_DISABLE_DOUBLE_TAP_LIKE, DEFAULT_DISABLE_DOUBLE_TAP_LIKE);
+    }
+
+    /** When on, feed and reel ad slots are removed instead of rendered. */
+    public static boolean blockAds() {
+        SharedPreferences p = prefs(null);
+        return p == null ? DEFAULT_BLOCK_ADS : p.getBoolean(KEY_BLOCK_ADS, DEFAULT_BLOCK_ADS);
     }
 
     static void putBoolean(Context context, String key, boolean value) {

@@ -183,6 +183,31 @@ internal object UserUsernameGetterFingerprint : Fingerprint(
 )
 
 /**
+ * The like action reached by both a double tap and the heart button.
+ *
+ * Instagram routes both through this one method, so it is anchored by the two analytics strings
+ * that only its double-tap-aware like path carries. The patch does not neutralize it (that would
+ * kill the heart button too); it injects a guard that returns only when the like came from a
+ * double tap, which the extension tells from the call stack.
+ */
+internal object DoubleTapLikeFingerprint : Fingerprint(
+    returnType = "V",
+    strings = listOf("double_tap_on_liked", "used_double_tap")
+)
+
+/**
+ * The method deciding whether a sponsored item is inserted into a feed or reel.
+ *
+ * Anchored on its own trace label, which is unique to it in the whole app. Forcing it to answer
+ * false is the entire feature: no ad is ever inserted, and since the ad never renders, the
+ * impression tracking that would accompany showing one never fires either.
+ */
+internal object AdPodInsertionFingerprint : Fingerprint(
+    returnType = "Z",
+    strings = listOf("Is ad pod")
+)
+
+/**
  * The screenshot-detection observer callback for stories, reels and disappearing DMs.
  *
  * When Android reports a screenshot, Instagram's detector posts a callback to each registered

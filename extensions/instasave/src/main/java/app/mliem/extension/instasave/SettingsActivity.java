@@ -21,8 +21,9 @@ import app.mliem.extension.BuildConfig;
  *
  * <p>A patched Instagram gives no clean place to hang a settings row inside its own UI without
  * fingerprinting obfuscated screens, so this is a standalone Activity declared in the manifest
- * with its own launcher icon. It is the entire settings surface: the updater controls and the
- * download quality choice, persisted through {@link Settings}.
+ * with its own launcher icon. It is the entire settings surface: the updater controls, the
+ * download quality choice, the double tap gesture, and ad blocking, all persisted through
+ * {@link Settings}.
  *
  * <p>The UI is built in code rather than from an XML layout, because a dex-merged extension
  * contributes classes only and cannot ship layout resources. It stays intentionally plain.
@@ -72,6 +73,32 @@ public final class SettingsActivity extends Activity {
                     }
                 }));
         root.addView(caption("Saved files go to Download/InstaSave."));
+
+        root.addView(sectionLabel("Feed"));
+        root.addView(toggle(
+                "Disable double tap to like",
+                "The heart button still works.",
+                Settings.getBoolean(this, Settings.KEY_DISABLE_DOUBLE_TAP_LIKE, false),
+                new CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(CompoundButton button, boolean checked) {
+                        Settings.putBoolean(SettingsActivity.this,
+                                Settings.KEY_DISABLE_DOUBLE_TAP_LIKE, checked);
+                    }
+                }));
+
+        root.addView(sectionLabel("Privacy"));
+        root.addView(toggle(
+                "Block ads",
+                "Removes sponsored posts from feeds. An ad that is never inserted also never " +
+                        "generates the impression tracking that goes with showing one.",
+                Settings.getBoolean(this, Settings.KEY_BLOCK_ADS, false),
+                new CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(CompoundButton button, boolean checked) {
+                        Settings.putBoolean(SettingsActivity.this, Settings.KEY_BLOCK_ADS, checked);
+                    }
+                }));
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root, new ScrollView.LayoutParams(
