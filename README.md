@@ -166,6 +166,14 @@ a "Download and install" action driven by the system `PackageInstaller`. It rest
 sharing one signing key (see Building), because Android rejects an update whose signature differs
 from the installed app. It is silent when the releases are not publicly reachable.
 
+The download itself, whether started from that notification or from "Check for updates now", runs
+an ongoing progress notification the whole time rather than a single toast and then silence, since
+the APK is large enough that a bare "downloading" message with nothing after it reads as stuck.
+Determinate whenever GitHub sends a content length, which it always does for a release asset, and
+falls back to an indeterminate bar with a running byte count otherwise. Switches to "installing"
+once the bytes are down, and is cancelled the moment the install finishes, fails, or hands off to
+the system's own confirmation screen.
+
 ### Settings screen (default on)
 
 A patched Instagram has no place to add a settings row without fingerprinting its own obfuscated
@@ -383,6 +391,9 @@ there, so running both never produces two.
       the cover still. Unit tested against a fake that reproduces the native-accessor shape.
 - [x] Disable screenshot detection.
 - [x] In-app updater from GitHub Releases, with a stable signing key so updates install in place.
+      The download runs an ongoing progress notification, determinate whenever the server sends a
+      content length and an indeterminate bar with a running byte count otherwise, since a single
+      toast and then silence on a large APK reads as stuck rather than working.
 - [x] Settings screen with its own launcher icon, styled like Instagram's own dark mode, and an
       explicit Save button rather than writing on every toggle flip. Declared with its own
       taskAffinity and singleTask so switching between it and Instagram never gets stuck on

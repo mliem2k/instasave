@@ -28,6 +28,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,6 +52,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * releases API returns 404 to an unauthenticated caller), or the device is offline, or there is
  * simply no newer release, nothing is shown. A self updater that nagged about the network on
  * every launch would be worse than none.
+ *
+ * <p>The download itself runs an ongoing progress notification the whole time, since the APK is
+ * large enough that a bare "downloading" toast with nothing after it reads as stuck. Determinate
+ * whenever GitHub's response carries a content length, which it always does for a release asset;
+ * an indeterminate bar with a running byte count otherwise. Switches to "installing" once the
+ * bytes are all down, and is cancelled the moment {@link #handleInstallStatus} reaches a terminal
+ * status or hands off to the system's own install confirmation screen. Skipped entirely when
+ * {@code POST_NOTIFICATIONS} is not granted, the same permission gate {@link #notifyUpdate} and
+ * {@link #beginDownloadAndInstall} answer with a toast instead.
  *
  * <p>The hard prerequisite is a stable signing key. Android rejects an update whose signature
  * differs from the installed app, so every published InstaSave APK must be signed with the same
@@ -294,13 +304,19 @@ public final class Updater {
 
     // region notify
 
+    /**
+     * Posting needs POST_NOTIFICATIONS on API 33+. Instagram already holds it, but a user could
+     * have revoked it, and both callers of this run off the main thread with no Activity, so it
+     * cannot be requested here.
+     */
+    private static boolean canPostNotifications(Context app) {
+        return Build.VERSION.SDK_INT < 33
+                || app.checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    == PackageManager.PERMISSION_GRANTED;
+    }
+
     private static void notifyUpdate(Context app, String tag, String apkUrl) {
-        // Posting needs POST_NOTIFICATIONS on API 33+. Instagram already holds it, but a user
-        // could have revoked it, and this runs off the main thread with no Activity, so it cannot
-        // be requested here. Fall back to a toast.
-        if (Build.VERSION.SDK_INT >= 33
-                && app.checkSelfPermission("android.permission.POST_NOTIFICATIONS")
-                    != PackageManager.PERMISSION_GRANTED) {
+        if (!canPostNotifications(app)) {
             InstaSave.toast(null, "InstaSave " + stripV(tag) + " available");
             return;
         }
@@ -409,27 +425,78 @@ public final class Updater {
             return;
         }
         // Committed to the download now, so the notification (if one exists) has served its
-        // purpose.
+        // purpose; the progress notification below reuses the same id.
         cancelNotification(app);
-        InstaSave.toast(null, "Downloading InstaSave " + stripV(tag == null ? "" : tag));
+        final String versionLabel = stripV(tag == null ? "" : tag);
+        InstaSave.toast(null, "Downloading InstaSave " + versionLabel);
         IO.execute(new Runnable() {
             @Override
             public void run() {
                 try {
-                    File apk = download(app, url);
+                    File apk = download(app, url, versionLabel);
+                    postProgressNotification(app, "Installing InstaSave " + versionLabel, null, 0, true);
                     install(app, apk);
-                    // busy is cleared on the terminal install status callback.
+                    // busy is cleared, and the notification cancelled, on the terminal install
+                    // status callback.
                 } catch (Throwable t) {
                     InstaSave.log("download or install failed", t);
                     InstaSave.toast(null, "InstaSave update failed");
+                    cancelNotification(app);
                     busy.set(false);
                 }
             }
         });
     }
 
-    private static File download(Context app, String url) throws Exception {
+    /**
+     * Posts and updates an ongoing progress notification for as long as the download runs, so a
+     * multi hundred megabyte APK does not sit there with no visible sign of life beyond the one
+     * toast at the start. Determinate whenever the server sends a content length (GitHub's CDN
+     * always does for a release asset); otherwise falls back to an indeterminate bar with a
+     * running byte count, rather than pretending to a percentage it does not have.
+     */
+    private static void postProgressNotification(
+            Context app, String title, String text, int percent, boolean indeterminate) {
+        if (!canPostNotifications(app)) {
+            return;
+        }
+        NotificationManager manager =
+                (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(new NotificationChannel(
+                    CHANNEL_ID, "InstaSave updates", NotificationManager.IMPORTANCE_LOW));
+        }
+        Notification.Builder builder = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                ? new Notification.Builder(app, CHANNEL_ID)
+                : new Notification.Builder(app);
+        builder.setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle(title)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setProgress(100, percent, indeterminate);
+        if (text != null) {
+            builder.setContentText(text);
+        }
+        manager.notify(NOTIFICATION_ID, builder.build());
+    }
+
+    private static String humanBytes(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " B";
+        }
+        double kb = bytes / 1024.0;
+        if (kb < 1024) {
+            return String.format(Locale.US, "%.0f KB", kb);
+        }
+        return String.format(Locale.US, "%.1f MB", kb / 1024.0);
+    }
+
+    private static File download(Context app, String url, String versionLabel) throws Exception {
         File out = new File(app.getCacheDir(), "instasave_update.apk");
+        String title = "Downloading InstaSave " + versionLabel;
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
         connection.setReadTimeout(READ_TIMEOUT_MS);
@@ -440,12 +507,32 @@ public final class Updater {
             if (code < 200 || code > 299) {
                 throw new IllegalStateException("download HTTP " + code);
             }
+            long total = connection.getContentLengthLong();
+            postProgressNotification(app, title, null, 0, total <= 0);
+            long bytesRead = 0;
+            int lastPercent = -1;
+            long lastUpdateMs = System.currentTimeMillis();
             try (InputStream in = connection.getInputStream();
                  OutputStream os = new FileOutputStream(out)) {
                 byte[] buffer = new byte[64 * 1024];
                 int read;
                 while ((read = in.read(buffer)) != -1) {
                     os.write(buffer, 0, read);
+                    bytesRead += read;
+                    if (total > 0) {
+                        int percent = (int) Math.min(100, bytesRead * 100L / total);
+                        if (percent != lastPercent) {
+                            lastPercent = percent;
+                            postProgressNotification(app, title, percent + "%", percent, false);
+                        }
+                    } else {
+                        long now = System.currentTimeMillis();
+                        if (now - lastUpdateMs >= 500) {
+                            lastUpdateMs = now;
+                            postProgressNotification(
+                                    app, title, humanBytes(bytesRead) + " downloaded", 0, true);
+                        }
+                    }
                 }
                 os.flush();
             }
@@ -509,7 +596,10 @@ public final class Updater {
         switch (status) {
             case PackageInstaller.STATUS_PENDING_USER_ACTION: {
                 // The system hands back a confirmation Activity intent. A receiver has no Activity
-                // context, so it must be launched as a new task.
+                // context, so it must be launched as a new task. Our own progress notification has
+                // served its purpose either way: the system's own confirmation UI is now the
+                // visible sign of progress, or, if it failed to launch, the flow is over.
+                cancelNotification(context);
                 Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
                 if (confirm != null) {
                     confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -530,10 +620,12 @@ public final class Updater {
             }
             case PackageInstaller.STATUS_SUCCESS:
                 busy.set(false);
+                cancelNotification(context);
                 InstaSave.toast(null, "InstaSave updated. Reopen to finish.");
                 break;
             default: {
                 busy.set(false);
+                cancelNotification(context);
                 String message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
                 if (message != null && message.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE")) {
                     // The signing key differs from the installed build. This is the one failure a
