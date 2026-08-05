@@ -1,6 +1,5 @@
 package app.mliem.extension.instasave;
 
-import android.app.Application;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
@@ -60,14 +59,6 @@ public final class InstaSave {
                 ? context.getApplicationContext()
                 : context;
         log("context captured: " + applicationContext.getPackageName());
-
-        if (applicationContext instanceof Application) {
-            try {
-                FloatingSaveButton.attach((Application) applicationContext);
-            } catch (Throwable t) {
-                log("floating save button registration failed", t);
-            }
-        }
     }
 
     /**

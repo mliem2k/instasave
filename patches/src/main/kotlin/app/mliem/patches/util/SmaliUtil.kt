@@ -91,7 +91,24 @@ internal fun Method.parameterRegisterOrThrow(description: String, matches: (Stri
  *
  * @return the scratch register to use.
  */
-internal fun Method.scratchRegisterOrThrow(): String {
+internal fun Method.scratchRegisterOrThrow(): String = scratchRegistersOrThrow(1).first()
+
+/**
+ * Asserts the method has at least [count] registers that are not parameter registers, and returns
+ * them as `v0`, `v1` and so on.
+ *
+ * Only valid for code injected at index 0. Dalvik requires definite assignment, so the original
+ * body cannot read a local before writing it, which makes the low registers free to clobber at
+ * method entry and only there. Injecting the same instructions further down would destroy a live
+ * value.
+ *
+ * The multi register form exists because a hook whose arguments are not contiguous cannot use
+ * `invoke-static/range` at all: `this` and the argument of interest can sit either side of a
+ * parameter the hook does not want, and there is no way to skip a register inside a range. Moving
+ * both down into low scratch registers first, with `move-object/from16` so the source may be above
+ * v15, makes a plain non range `invoke-static` legal again.
+ */
+internal fun Method.scratchRegistersOrThrow(count: Int): List<String> {
     val implementation = implementation
         ?: throw PatchException("$definingClass->$name has no implementation to patch")
 
@@ -101,13 +118,17 @@ internal fun Method.scratchRegisterOrThrow(): String {
     }
 
     val locals = implementation.registerCount - parameterRegisters
-    if (locals < 1) {
+    if (locals < count) {
         throw PatchException(
-            "$definingClass->$name declares no local registers, so v0 aliases a parameter. " +
-                "This injection needs a scratch register; widen the method or pick another target."
+            "$definingClass->$name declares $locals local registers but this injection needs " +
+                "$count. Any lower register aliases a parameter the original code still reads; " +
+                "widen the method or pick another target."
         )
     }
-    return "v0"
+    if (count > 16) {
+        throw PatchException("cannot address more than 16 scratch registers in a non range invoke")
+    }
+    return (0 until count).map { "v$it" }
 }
 
 /**

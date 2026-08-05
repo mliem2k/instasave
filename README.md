@@ -80,8 +80,26 @@ bytecode injection can simply capture at the better of the two call sites instea
 
 Profile pictures have no menu to add to. Instagram's own image view is patched where it binds a
 URL, one seam covering every image the app renders. That yields a short history of recently bound
-URLs that the resolver falls back to when a tap handler captured nothing reachable, and a save
-gesture on every one of those images.
+URLs that the resolver falls back to when a tap handler captured nothing reachable, a save gesture
+on every one of those images, and the view each URL belongs to, which is what the on post save
+button below is anchored to.
+
+This seam was pointed at the wrong method until 0.2.11, and it is worth recording how, because
+nothing about it looked wrong. The fingerprint asked for a void method on `IgImageView` taking
+`(ImageUrl, L)`, which reads exactly like the URL setter. On 440 the only method with that shape
+is `setTrackingUrl`, an analytics setter with two call sites in the whole app, both inside one
+unrelated class. So the fingerprint resolved, the patch reported applied, the build was signed,
+and the hook never once ran on a feed image. Everything downstream was dead: long press recorded
+no URL for any view and so silently did nothing, and the save button had no bound view to attach
+to and so never appeared. Three releases went out fixing symptoms of it.
+
+The real path is `setUrl`, with 339 call sites, into the private `setUrlInternal`, which every
+other entry funnels into as well, including the Vito backed loader it delegates to internally. The
+fingerprint now identifies that by shape (seven parameters, `ImageUrl` second, unique on the class)
+rather than by a name obfuscation is free to take. The general lesson, now enforced by habit: a
+fingerprint that resolves is not a fingerprint that is correct, so count the call sites of whatever
+it matched before trusting it, and confirm the injection landed where intended by disassembling the
+patched APK rather than by reading the patcher's own success line.
 
 That gesture used to skip any view where `isLongClickable()` was already true, on the reasoning
 that such a view (post previews, reorder handles in the composer) had its own long press wired
@@ -113,42 +131,46 @@ Known gap: which candidate is saved for a multi image post is not yet aware of w
 screen; it currently saves the highest resolution candidate found, not necessarily the visible
 one. Locating the carousel position accessor is unresearched.
 
-### Floating save button (default on, no bytecode patch)
+### Save button on the post (default on, no bytecode patch)
 
 Instagram's own overflow menu is not a fixed target: it has changed shape once already in the time
 this project has existed, and patches 1 and 4 above only reach whatever is currently baked into the
 menu builder's own bytecode. Whatever Instagram does with that menu next, this does not depend on
-it at all. A small, semi-transparent round button, in Instagram's own blue, does not sit at a fixed
-corner of the screen. It is repositioned every frame to sit on top of the bottom right corner of
-whichever image was most recently bound anywhere in the app and is actually visible right now,
-which in practice is the post currently on screen. It stays hidden until something qualifies,
-rather than sitting there ready to answer a tap with nothing to save.
+it at all. A small dark circular button sits in the bottom right corner of the post's own image,
+and tapping it saves that post.
 
-"Actually visible right now" is checked deliberately, not assumed from "bound most recently": a
-carousel slide or a Reels page one swipe away is commonly kept attached ahead of time so the swipe
-has something ready to show, so the very last bind can legitimately be for a page sitting off to
-the side rather than the one on screen. Trusting that last bind unconditionally is what made the
-button disappear on real content; it now walks backward through a short history of recent binds
-for the most recent one that is attached, has real size, and has at least one visible pixel on
-screen, and reuses that same walk to know exactly which post a tap should save, so the button
-never points at content different from what it is visually sitting on. Tapping it opens a small
-menu of InstaSave's own, independent of Instagram's, with a single Save entry.
+It is a real child of the post's own container, not an overlay pinned to the screen. An earlier
+version was a button fixed to the corner of the window, which was rejected as bad design and
+deserved to be: a control that acts on one specific post belongs on that post, not floating
+somewhere generic and inferring which post it means. Being a real child also makes it behave
+correctly for free. It scrolls in exact sync with the post because it moves with its parent, it is
+clipped by the same bounds as everything else in the post rather than floating over the top bar on
+the way out of view, and it costs nothing per frame.
 
-This does not inject a real child view into Instagram's own post layout: that would mean guessing
-the right `ViewGroup.LayoutParams` type for a parent whose actual class is unknown and varies by
-surface, and guessing wrong on a stacking layout would not overlay the image at all, it would
-insert as a whole extra row and visibly break Instagram's own feed. Instead the button lives in its
-own layer, added once to the activity's decor view, and tracks the target image's own current on
-screen location every frame through a plain `ViewTreeObserver.OnPreDrawListener`, never touching a
-view Instagram owns.
+The risk that has to be answered is layout damage, so the container is chosen rather than assumed.
+Adding a child to a stacking container (a vertical `LinearLayout`) would not overlay the image at
+all, it would insert a whole extra row and visibly break the feed; handing the button to a recycler
+or a pager would give it to something that owns its children's positions and lifecycles. So the
+walk up from the image accepts only containers that position children freely and independently
+(`FrameLayout`, `RelativeLayout`, and the constraint and coordinator layouts matched by name, with
+scrollers rejected first since `ScrollView` is itself a `FrameLayout`), and stops rather than
+settling for anything else. Such an ancestor is close to guaranteed in practice, because Instagram
+already draws its own things over post images (carousel dots, product pills, audio attribution), so
+the container holding the image has to support exactly this already.
 
-Needs no new bytecode patch at all: it is registered once, through the standard
-`Application.ActivityLifecycleCallbacks` API, from the same extension entry point that already
-captures the application Context, and reuses the URL and view tracking `imageLongPressDownloadPatch`
-already built. Skips InstaSave's own settings screen, which has nothing to save. The button is
-added lazily, posted to the content view rather than attached synchronously inside the lifecycle
-callback, so it never adds an extra layout pass to the one moment (an activity becoming visible)
-where that cost is most noticeable.
+Positioned by translation rather than by layout params, so it never takes part in the host's
+measure pass and cannot move anything else. Both views live inside the same container, so that
+offset does not change while scrolling, which is the whole reason a child needs no per frame
+tracking. Only the one structural change, adding the button, is posted out of the layout pass that
+triggers it, since calling `addView` on a host that is already laying out is what provokes a nested
+layout request. Images below 150dp in either dimension are skipped, which keeps buttons off avatars,
+story rings, grid tiles and icons, and keeps a 34dp button from growing a small wrap content
+container that holds something smaller than the button itself.
+
+Needs no new bytecode patch at all: it is driven entirely by the URL and view tracking
+`imageLongPressDownloadPatch` already installs, and it knows exactly which view it belongs to, so
+the post it is sitting on and the post it saves are the same by construction rather than by
+inference.
 
 Two more patches ship alongside the save actions:
 
@@ -416,22 +438,27 @@ there, so running both never produces two.
       not a stable target: on a real account it no longer showed the classic Report/Share/Download
       list at all, replaced by different entries. Whatever the cause, chasing wherever that menu
       moves to next is not a durable fix on its own.
-- [x] Floating save button and menu, independent of Instagram's own overflow menu entirely: a
-      small button that tracks whichever image was most recently bound AND is actually visible on
-      screen right now, repositioning itself onto that image's bottom right corner every frame,
-      rather than sitting at a fixed spot on screen, opening a small menu of InstaSave's own.
-      Hidden entirely whenever nothing qualifies, instead of answering a tap with nothing to save.
-      Real device testing found the button never appeared at all: checking only whether the most
-      recently bound view was attached to a window was not enough, since a carousel slide or a
-      Reels page kept attached one swipe ahead of the one on screen passes that check while sitting
-      off to the side. Fixed by walking backward through a short history of recent binds for one
-      that is attached, has real size, and has at least one visible pixel on screen. Needs no new
-      bytecode patch, reuses the existing URL tracking, and is added lazily so it never costs an
-      activity an extra layout pass while it is becoming visible. Verified: builds clean, patches
-      apply with zero exceptions, unit tests pass; not yet confirmed tracking or saving real bound
-      content on a logged in account, since this project no longer uses an emulator to verify (it
-      has never once caught the bugs that mattered here) and real verification is the next real
-      device test.
+- [x] The image bind hook was pointed at the wrong method from the day it was written, which is
+      why nothing that depended on it ever worked. The fingerprint asked for a void method on
+      `IgImageView` taking `(ImageUrl, L)`, which reads like the URL setter and on 440 matches only
+      `setTrackingUrl`, an analytics setter with two call sites in the entire app. It resolved, so
+      the patch reported applied and the build was signed, and the hook then never ran on a single
+      feed image: long press recorded no URL and silently did nothing, and the save button had no
+      bound view to attach to and never appeared. Retargeted at `setUrlInternal`, the funnel every
+      bind reaches (339 call sites through `setUrl` alone, plus the Vito loader it delegates to),
+      identified by shape rather than by an obfuscatable name. Verified by disassembling the patched
+      APK and confirming the injected instructions sit at the top of that exact method, which is the
+      check whose absence let this survive three releases.
+- [x] Save button on the post, a real child of the post's own container rather than a button pinned
+      to a corner of the screen. Scrolls with the post, is clipped with it, costs nothing per frame,
+      and saves the post it is sitting on by construction rather than by inferring which post is
+      meant. The container is chosen, never assumed: only containers that position children freely
+      are accepted, so a stacking layout can never receive it as an extra row, and scrollers, pagers
+      and recyclers are rejected outright. Verified: builds clean, all eleven patches apply with
+      zero exceptions, unit tests pass, and the injection site is confirmed in the disassembly. Not
+      confirmed against a real logged in feed, which is the next real device test; this project does
+      not use an emulator to verify, since emulator runs have never caught the bugs that mattered
+      here.
 - [x] Long press to save no longer skips feed posts and carousel slides. It used to skip any view
       Instagram had already made long clickable, on the assumption those surfaces had a menu for
       saving anyway; once that stopped being reliably true, it now runs its own independent long

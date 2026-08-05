@@ -1,55 +1,68 @@
 package app.mliem.extension.instasave;
 
-import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 
-import java.lang.ref.WeakReference;
+import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Tracks which CDN URL each Instagram image view most recently bound.
  *
- * <p>Two jobs. First, it powers long press to save, which is how profile pictures and any other
- * image without an options menu get a save action. Second, it keeps a small history of recent
- * binds, view included, that both {@link MediaUrlResolver} and the floating save button fall
- * back to.
+ * <p>Three jobs. It tells {@link PostSaveButton} which view to put a save button on and what that
+ * button should save. It powers long press to save, which is how a profile picture, or anything
+ * else with no options menu, gets a save action. And it keeps a small ring of recently bound URLs
+ * that {@link MediaUrlResolver} falls back to when a click handler turns out to be a synthetic
+ * class that captured nothing reachable.
  *
- * <p>Called from Instagram's image URL setter, which runs on the main thread for every image in
- * every list, so everything here stays O(1) and allocation free on the common path.
+ * <p>Called from Instagram's own image bind funnel, which runs on the main thread for every image
+ * in every list, so the common path here has to stay genuinely cheap. Two things that did not
+ * matter before now do. The hook this class hangs off was pointed at the wrong method until
+ * 0.2.11 and so never actually ran, which meant a per bind {@code getMethod} reflection lookup and
+ * a fresh touch listener allocated on every single bind were free in practice. Now that the hook
+ * fires for real, on every image of every scroll frame, both are paid for: the URL accessor is
+ * resolved once per implementation class and cached, and the touch listener is attached once per
+ * view rather than rebuilt each time that view is recycled onto a new post.
  */
 public final class ImageViewRegistry {
 
     private static final int RECENT_CAPACITY = 12;
 
-    /** One bind event: the URL a view loaded, and a weak handle back to that view. */
-    private static final class Bind {
-        final String url;
-        final WeakReference<View> view;
-
-        Bind(String url, View view) {
-            this.url = url;
-            this.view = new WeakReference<>(view);
-        }
-    }
-
     private static final Map<View, String> BOUND_URLS = new WeakHashMap<>();
-
-    /** Most recent first. Kept as full bind records, not just URLs, so a caller with no view of
-     *  its own can walk backward past a bind that is no longer on screen to the next one that
-     *  is, rather than trusting the single last bind unconditionally. A carousel or a Reels
-     *  pager keeps the next page attached one ahead so a swipe has something to show, so
-     *  "attached to a window" alone does not mean "the thing on screen right now": the very
-     *  last bind can legitimately be for a page sitting just off to the side. */
-    private static final ArrayDeque<Bind> RECENT = new ArrayDeque<>();
-
+    private static final ArrayDeque<String> RECENT = new ArrayDeque<>();
     private static final Handler HANDLER = new Handler(Looper.getMainLooper());
+
+    /** Views that already carry the long press gesture, so recycling does not stack duplicates. */
+    private static final Map<View, Boolean> LONG_PRESS_ATTACHED = new WeakHashMap<>();
+
+    /**
+     * {@code getUrl()} per {@code ImageUrl} implementation class.
+     *
+     * <p>{@code Class.getMethod} copies the whole public method list on every call, which is far
+     * too expensive to repeat for every image of every frame. The set of implementation classes
+     * is tiny and lives as long as the process, so caching them costs nothing.
+     */
+    private static final Map<Class<?>, Method> URL_GETTERS = new ConcurrentHashMap<>();
+
+    /** Stands in for "this class has no getUrl", since ConcurrentHashMap rejects null values. */
+    private static final Method NO_GETTER;
+
+    static {
+        Method sentinel = null;
+        try {
+            sentinel = Object.class.getMethod("hashCode");
+        } catch (Throwable ignored) {
+            // Cannot happen. If it somehow does, the cache degrades to re-resolving each time.
+        }
+        NO_GETTER = sentinel;
+    }
 
     private ImageViewRegistry() {
     }
@@ -73,17 +86,24 @@ public final class ImageViewRegistry {
             View target = (View) view;
             synchronized (BOUND_URLS) {
                 BOUND_URLS.put(target, url);
-                Bind front = RECENT.peekFirst();
-                boolean sameAsFront = front != null && url.equals(front.url) && front.view.get() == target;
-                if (!sameAsFront) {
-                    RECENT.addFirst(new Bind(url, target));
+                if (!url.equals(RECENT.peekFirst())) {
+                    RECENT.addFirst(url);
                     while (RECENT.size() > RECENT_CAPACITY) {
                         RECENT.removeLast();
                     }
                 }
             }
 
-            attachLongPress(target);
+            // A View may only be touched from the thread that owns it. Recording the URL above is
+            // safe anywhere; everything below builds or mutates views and is not.
+            if (Looper.myLooper() != Looper.getMainLooper()) {
+                return;
+            }
+
+            if (LONG_PRESS_ATTACHED.put(target, Boolean.TRUE) == null) {
+                attachLongPress(target);
+            }
+            PostSaveButton.onImageBound(target);
         } catch (Throwable t) {
             // This is a hot path in Instagram's own rendering. Never let it throw.
             InstaSave.log("onImageUrlBound failed", t);
@@ -171,20 +191,33 @@ public final class ImageViewRegistry {
     }
 
     private static void triggerSave(View view) {
+        MediaUrlResolver.Resolved media = resolveFor(view);
+        if (media == null) {
+            return;
+        }
+        Downloader.enqueue(view.getContext(), media);
+    }
+
+    /**
+     * What {@code view} is currently showing, resolved with as much metadata as a graph walk from
+     * that view can find, or null when nothing is bound to it.
+     *
+     * <p>Keyed by the view itself rather than by "whatever bound most recently anywhere", which is
+     * what lets a save button state exactly which post it belongs to instead of guessing. The
+     * guessing version could point at a carousel page held ready one swipe ahead of the visible
+     * one, so the button could sit on one post and save another.
+     */
+    public static MediaUrlResolver.Resolved resolveFor(View view) {
         String url;
         synchronized (BOUND_URLS) {
             url = BOUND_URLS.get(view);
         }
-        if (url == null) {
-            return;
-        }
-        Downloader.enqueue(view.getContext(), describe(view, url));
+        return url == null ? null : describe(view, url);
     }
 
     /**
-     * Builds the download request for a long pressed view. The URL is already known, so the
-     * graph walk runs only to pick up a username and media id for the file name, and its
-     * failure is not fatal.
+     * Builds the download request for a known view. The URL is already known, so the graph walk
+     * runs only to pick up a username and media id for the file name, and its failure is not fatal.
      */
     private static MediaUrlResolver.Resolved describe(View view, String url) {
         String username = null;
@@ -199,94 +232,37 @@ public final class ImageViewRegistry {
             InstaSave.log("metadata walk failed, saving without a name", t);
         }
         return new MediaUrlResolver.Resolved(
-                url, MediaUrlResolver.isVideoUrl(url), username, mediaId, Collections.<MediaUrlResolver.Candidate>emptyList());
+                url, MediaUrlResolver.isVideoUrl(url), username, mediaId,
+                Collections.<MediaUrlResolver.Candidate>emptyList());
     }
 
     /** The URL bound most recently anywhere in the app, or null if nothing has bound yet. */
     public static String mostRecentUrl() {
         synchronized (BOUND_URLS) {
-            Bind front = RECENT.peekFirst();
-            return front != null ? front.url : null;
+            return RECENT.peekFirst();
         }
     }
 
-    /**
-     * The most recently bound view that is still attached to a window, has been laid out, and is
-     * actually visible on screen right now, or null if nothing so far qualifies. Walks backward
-     * through recent binds rather than trusting only the very last one, since the last bind can
-     * legitimately be a carousel or Reels page Instagram keeps attached one ahead of the one on
-     * screen, so it has something ready the moment a swipe finishes; that page is attached, but
-     * sitting off to the side, not on screen. Lets a caller with no view of its own, such as the
-     * floating save button, position itself on top of the post actually on screen instead of
-     * sitting at a fixed spot, or disappearing whenever the latest bind happens to be that
-     * lookahead page.
-     */
-    public static View mostRecentView() {
-        synchronized (BOUND_URLS) {
-            for (Bind bind : RECENT) {
-                View view = bind.view.get();
-                if (isOnScreen(view)) {
-                    return view;
-                }
-            }
+    /** The cached {@code getUrl()} for an implementation class, or null when it has none. */
+    private static Method urlGetter(Class<?> type) {
+        Method cached = URL_GETTERS.get(type);
+        if (cached != null) {
+            return cached == NO_GETTER ? null : cached;
         }
-        return null;
-    }
-
-    /**
-     * The most recently bound image that is actually visible on screen right now, resolved with
-     * as much metadata as a graph walk from its view can find. Falls back to the single most
-     * recent bind, view included if it is still reachable, when nothing currently qualifies as
-     * on screen, so a tap that narrowly loses a race with a scroll still saves something sensible
-     * rather than nothing at all. Null only when nothing has bound yet.
-     */
-    public static MediaUrlResolver.Resolved mostRecentResolved() {
-        String url = null;
-        View view = null;
-        synchronized (BOUND_URLS) {
-            for (Bind bind : RECENT) {
-                View candidate = bind.view.get();
-                if (isOnScreen(candidate)) {
-                    url = bind.url;
-                    view = candidate;
-                    break;
-                }
-            }
-            if (url == null) {
-                Bind front = RECENT.peekFirst();
-                if (front != null) {
-                    url = front.url;
-                    view = front.view.get();
-                }
-            }
+        Method resolved = null;
+        try {
+            // ImageUrl is one of the interfaces Instagram leaves unobfuscated. The implementing
+            // class is usually package private, so the accessible flag is what makes the public
+            // interface method callable on it.
+            resolved = type.getMethod("getUrl");
+            resolved.setAccessible(true);
+        } catch (Throwable ignored) {
+            // Not an ImageUrl. Recorded below so the lookup is not repeated for this class.
         }
-        if (url == null) {
-            return null;
+        if (NO_GETTER != null) {
+            URL_GETTERS.put(type, resolved == null ? NO_GETTER : resolved);
         }
-        if (view == null) {
-            // The view was garbage collected between binding and this call. Nothing to walk,
-            // so save with a bare, unnamed file rather than re-deriving the same URL through
-            // MediaUrlResolver's own fallback to this exact method.
-            return new MediaUrlResolver.Resolved(
-                    url, MediaUrlResolver.isVideoUrl(url), null, null,
-                    Collections.<MediaUrlResolver.Candidate>emptyList());
-        }
-        return describe(view, url);
-    }
-
-    /**
-     * True when {@code view} is attached, has real size, and has at least one visible pixel on
-     * screen right now. {@code isAttachedToWindow()} alone is not enough: a carousel slide or
-     * Reels page one swipe away is commonly kept attached ahead of time and would pass that check
-     * while sitting entirely outside the visible viewport.
-     */
-    private static boolean isOnScreen(View view) {
-        if (view == null || !view.isAttachedToWindow()
-                || view.getWidth() == 0 || view.getHeight() == 0) {
-            return false;
-        }
-        Rect visible = new Rect();
-        return view.getGlobalVisibleRect(visible);
+        return resolved;
     }
 
     private static String extractUrl(Object imageUrl) {
@@ -297,14 +273,17 @@ public final class ImageViewRegistry {
             String value = (String) imageUrl;
             return MediaUrlResolver.isMediaUrl(value) ? value : null;
         }
+        Method getter = urlGetter(imageUrl.getClass());
+        if (getter == null) {
+            return null;
+        }
         try {
-            // ImageUrl is one of the interfaces Instagram leaves unobfuscated.
-            Object value = imageUrl.getClass().getMethod("getUrl").invoke(imageUrl);
+            Object value = getter.invoke(imageUrl);
             if (value instanceof String && MediaUrlResolver.isMediaUrl((String) value)) {
                 return (String) value;
             }
         } catch (Throwable ignored) {
-            // Not an ImageUrl. Nothing to record.
+            // A URL that cannot be read is simply not recorded.
         }
         return null;
     }

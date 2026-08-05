@@ -191,16 +191,38 @@ internal object StoryOptionClickFingerprint : Fingerprint(
 )
 
 /**
- * `IgImageView`'s URL setter, called for every image the app renders.
+ * `IgImageView.setUrlInternal`, the single funnel every image bind passes through.
  *
  * Both the view class and the `ImageUrl` interface keep their real names, so this resolves
- * without a string anchor. It is the seam that gives long press to save its URL, and it feeds
- * the recently bound URL fallback used when a click handler captured nothing reachable.
+ * without a string anchor. It is the seam that gives long press to save its URL, that puts the
+ * save button on the right post, and that feeds the recently bound URL fallback used when a
+ * click handler captured nothing reachable.
+ *
+ * The shape here is deliberate and load bearing. This used to be declared as two parameters,
+ * `("/ImageUrl;", "L")`, which reads like the obvious URL setter and is not: on 440 the only
+ * method on this class with that shape is `setTrackingUrl`, an analytics only setter with two
+ * call sites in the entire app, both inside one unrelated class. So the injection resolved, the
+ * patch reported applied, the build was signed, and the hook then never fired on a single feed
+ * image. Everything downstream of it was dead: long press to save recorded no URL for any view,
+ * so it silently did nothing, and the save button had no bound view to attach itself to, so it
+ * never appeared. Three releases treated the symptoms of that.
+ *
+ * The real path is `setUrl` (339 call sites) into `setUrlInternal`, which every other entry
+ * (`setUrlWithFallback`, `A0F`, and the Vito backed variant it delegates to internally) also
+ * funnels into, so hooking it once covers every image the app renders on either loader. It is
+ * identified by shape rather than by name: seven parameters with the `ImageUrl` second is unique
+ * on this class, where the name is not guaranteed to survive a future build's obfuscation.
+ *
+ * The lesson worth keeping: a fingerprint that resolves is not a fingerprint that is correct.
+ * Count the call sites of whatever it matched before trusting it.
  */
 internal object ImageUrlBindFingerprint : Fingerprint(
     definingClass = "/IgImageView;",
     returnType = "V",
-    parameters = listOf("/ImageUrl;", "L")
+    custom = { method, _ ->
+        method.parameters.size == 7 &&
+            method.parameters[1].type.endsWith("/ImageUrl;")
+    }
 )
 
 /**
