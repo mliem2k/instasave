@@ -79,9 +79,20 @@ bytecode injection can simply capture at the better of the two call sites instea
 ### 3. Long press to save images (default on)
 
 Profile pictures have no menu to add to. Instagram's own image view is patched where it binds a
-URL, one seam covering every image the app renders. That yields a long press handler on views
-nothing else claims (`isLongClickable()` is false), plus a short history of recently bound URLs
-that the resolver falls back to when a tap handler captured nothing reachable.
+URL, one seam covering every image the app renders. That yields a short history of recently bound
+URLs that the resolver falls back to when a tap handler captured nothing reachable, and a save
+gesture on every one of those images.
+
+That gesture used to skip any view where `isLongClickable()` was already true, on the reasoning
+that such a view (post previews, reorder handles in the composer) had its own long press wired
+through `setOnLongClickListener` and had a menu for saving anyway. That premise stopped holding
+once patch 1's own menu turned out not to be reliably reachable on every build: a feed post or a
+carousel slide almost always reports `isLongClickable() == true` for reasons that have nothing to
+do with saving, so it was left with no save action at all. Rather than replace
+`setOnLongClickListener` and risk breaking whatever claimed it, this now runs its own long press
+timer through a plain `OnTouchListener` that always returns false, so it never consumes the event
+and Instagram's own touch handling on that view, including whatever else registered a long click,
+keeps working unmodified alongside it.
 
 ### 4. Save posts and reels, fallback (default on)
 
@@ -101,6 +112,25 @@ this is a no-op; where it does not, this is what actually gives the post a downl
 Known gap: which candidate is saved for a multi image post is not yet aware of which slide is on
 screen; it currently saves the highest resolution candidate found, not necessarily the visible
 one. Locating the carousel position accessor is unresearched.
+
+### Floating save button (default on, no bytecode patch)
+
+Instagram's own overflow menu is not a fixed target: it has changed shape once already in the time
+this project has existed, and patches 1 and 4 above only reach whatever is currently baked into the
+menu builder's own bytecode. Whatever Instagram does with that menu next, this does not depend on
+it at all. A small round button, styled in Instagram's own blue, floats in the bottom right corner
+of every screen in the app. Tapping it opens a small menu of InstaSave's own, independent of
+Instagram's, with a single Save entry that saves whichever image or video was most recently
+rendered anywhere in the app, which in practice is the post currently on screen, since Instagram
+only renders what is near the viewport.
+
+Needs no new bytecode patch at all: it is registered once, through the standard
+`Application.ActivityLifecycleCallbacks` API, from the same extension entry point that already
+captures the application Context, and reuses the URL and view tracking `imageLongPressDownloadPatch`
+already built. Skips InstaSave's own settings screen, which has nothing to save. The button is
+added lazily, posted to the content view rather than attached synchronously inside the lifecycle
+callback, so it never adds an extra layout pass to the one moment (an activity becoming visible)
+where that cost is most noticeable.
 
 Two more patches ship alongside the save actions:
 
@@ -353,6 +383,22 @@ there, so running both never produces two.
       entry) and on device with no crash; not yet confirmed against a real logged in feed.
 - [ ] Which carousel slide is saved is not yet aware of which one is on screen; the highest
       resolution candidate found is saved regardless of position.
+- [x] Real world use after the eligibility gate fix above showed Instagram's own overflow menu is
+      not a stable target: on a real account it no longer showed the classic Report/Share/Download
+      list at all, replaced by different entries. Whatever the cause, chasing wherever that menu
+      moves to next is not a durable fix on its own.
+- [x] Floating save button and menu, independent of Instagram's own overflow menu entirely: a
+      round button in the bottom right corner of every screen, opening a small menu of InstaSave's
+      own. Needs no new bytecode patch, reuses the existing URL tracking, and is added lazily so it
+      never costs an activity an extra layout pass while it is becoming visible. Verified on device
+      with no crash and the button rendering correctly across repeated fresh installs; not yet
+      confirmed saving real content on a logged in account.
+- [x] Long press to save no longer skips feed posts and carousel slides. It used to skip any view
+      Instagram had already made long clickable, on the assumption those surfaces had a menu for
+      saving anyway; once that stopped being reliably true, it now runs its own independent long
+      press timer through a plain `OnTouchListener` that never consumes the event, so Instagram's
+      own touch handling on the same view, long click or otherwise, keeps working unmodified
+      alongside it.
 - [x] Builds. `./gradlew :patches:build` produces `patches/build/libs/patches-0.2.0.mpp` with the
       extension dex bundled at `extensions/instasave.mpe`. 23 JVM unit tests pass.
 - [x] **All eight patches apply cleanly to Instagram 440.1.0.46.86**, with zero patch exceptions,
