@@ -1,5 +1,6 @@
 package app.mliem.extension.instasave;
 
+import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
@@ -16,9 +17,9 @@ import java.util.WeakHashMap;
  * Tracks which CDN URL each Instagram image view most recently bound.
  *
  * <p>Two jobs. First, it powers long press to save, which is how profile pictures and any other
- * image without an options menu get a save action. Second, it keeps a small ring of recently
- * bound URLs that {@link MediaUrlResolver} falls back to when a click handler turns out to be a
- * synthetic class that captured nothing reachable.
+ * image without an options menu get a save action. Second, it keeps a small history of recent
+ * binds, view included, that both {@link MediaUrlResolver} and the floating save button fall
+ * back to.
  *
  * <p>Called from Instagram's image URL setter, which runs on the main thread for every image in
  * every list, so everything here stays O(1) and allocation free on the common path.
@@ -27,14 +28,28 @@ public final class ImageViewRegistry {
 
     private static final int RECENT_CAPACITY = 12;
 
-    private static final Map<View, String> BOUND_URLS = new WeakHashMap<>();
-    private static final ArrayDeque<String> RECENT = new ArrayDeque<>();
-    private static final Handler HANDLER = new Handler(Looper.getMainLooper());
+    /** One bind event: the URL a view loaded, and a weak handle back to that view. */
+    private static final class Bind {
+        final String url;
+        final WeakReference<View> view;
 
-    /** The view behind {@link #RECENT}'s first entry, so a caller with no view of its own (the
-     *  floating save button, which is not anchored to any particular post) can still resolve a
-     *  proper username and media id instead of saving with a bare, unnamed file. */
-    private static volatile WeakReference<View> mostRecentView;
+        Bind(String url, View view) {
+            this.url = url;
+            this.view = new WeakReference<>(view);
+        }
+    }
+
+    private static final Map<View, String> BOUND_URLS = new WeakHashMap<>();
+
+    /** Most recent first. Kept as full bind records, not just URLs, so a caller with no view of
+     *  its own can walk backward past a bind that is no longer on screen to the next one that
+     *  is, rather than trusting the single last bind unconditionally. A carousel or a Reels
+     *  pager keeps the next page attached one ahead so a swipe has something to show, so
+     *  "attached to a window" alone does not mean "the thing on screen right now": the very
+     *  last bind can legitimately be for a page sitting just off to the side. */
+    private static final ArrayDeque<Bind> RECENT = new ArrayDeque<>();
+
+    private static final Handler HANDLER = new Handler(Looper.getMainLooper());
 
     private ImageViewRegistry() {
     }
@@ -58,13 +73,14 @@ public final class ImageViewRegistry {
             View target = (View) view;
             synchronized (BOUND_URLS) {
                 BOUND_URLS.put(target, url);
-                if (RECENT.peekFirst() == null || !url.equals(RECENT.peekFirst())) {
-                    RECENT.addFirst(url);
+                Bind front = RECENT.peekFirst();
+                boolean sameAsFront = front != null && url.equals(front.url) && front.view.get() == target;
+                if (!sameAsFront) {
+                    RECENT.addFirst(new Bind(url, target));
                     while (RECENT.size() > RECENT_CAPACITY) {
                         RECENT.removeLast();
                     }
                 }
-                mostRecentView = new WeakReference<>(target);
             }
 
             attachLongPress(target);
@@ -189,33 +205,60 @@ public final class ImageViewRegistry {
     /** The URL bound most recently anywhere in the app, or null if nothing has bound yet. */
     public static String mostRecentUrl() {
         synchronized (BOUND_URLS) {
-            return RECENT.peekFirst();
+            Bind front = RECENT.peekFirst();
+            return front != null ? front.url : null;
         }
     }
 
     /**
-     * The view behind {@link #mostRecentUrl()}, or null if nothing has bound yet or that view has
-     * since been recycled out of the window. Lets a caller with no view of its own, such as the
-     * floating save button, position itself on top of the post that URL actually belongs to
-     * instead of sitting at a fixed spot on screen.
+     * The most recently bound view that is still attached to a window, has been laid out, and is
+     * actually visible on screen right now, or null if nothing so far qualifies. Walks backward
+     * through recent binds rather than trusting only the very last one, since the last bind can
+     * legitimately be a carousel or Reels page Instagram keeps attached one ahead of the one on
+     * screen, so it has something ready the moment a swipe finishes; that page is attached, but
+     * sitting off to the side, not on screen. Lets a caller with no view of its own, such as the
+     * floating save button, position itself on top of the post actually on screen instead of
+     * sitting at a fixed spot, or disappearing whenever the latest bind happens to be that
+     * lookahead page.
      */
     public static View mostRecentView() {
-        WeakReference<View> ref = mostRecentView;
-        View view = ref != null ? ref.get() : null;
-        return view != null && view.isAttachedToWindow() ? view : null;
+        synchronized (BOUND_URLS) {
+            for (Bind bind : RECENT) {
+                View view = bind.view.get();
+                if (isOnScreen(view)) {
+                    return view;
+                }
+            }
+        }
+        return null;
     }
 
     /**
-     * The most recently bound image, resolved with as much metadata as a graph walk from its
-     * view can find, or null if nothing has bound yet. In practice this is whichever post is
-     * currently on screen, since Instagram only renders what is near the viewport.
+     * The most recently bound image that is actually visible on screen right now, resolved with
+     * as much metadata as a graph walk from its view can find. Falls back to the single most
+     * recent bind, view included if it is still reachable, when nothing currently qualifies as
+     * on screen, so a tap that narrowly loses a race with a scroll still saves something sensible
+     * rather than nothing at all. Null only when nothing has bound yet.
      */
     public static MediaUrlResolver.Resolved mostRecentResolved() {
-        String url;
-        View view;
+        String url = null;
+        View view = null;
         synchronized (BOUND_URLS) {
-            url = RECENT.peekFirst();
-            view = mostRecentView != null ? mostRecentView.get() : null;
+            for (Bind bind : RECENT) {
+                View candidate = bind.view.get();
+                if (isOnScreen(candidate)) {
+                    url = bind.url;
+                    view = candidate;
+                    break;
+                }
+            }
+            if (url == null) {
+                Bind front = RECENT.peekFirst();
+                if (front != null) {
+                    url = front.url;
+                    view = front.view.get();
+                }
+            }
         }
         if (url == null) {
             return null;
@@ -229,6 +272,21 @@ public final class ImageViewRegistry {
                     Collections.<MediaUrlResolver.Candidate>emptyList());
         }
         return describe(view, url);
+    }
+
+    /**
+     * True when {@code view} is attached, has real size, and has at least one visible pixel on
+     * screen right now. {@code isAttachedToWindow()} alone is not enough: a carousel slide or
+     * Reels page one swipe away is commonly kept attached ahead of time and would pass that check
+     * while sitting entirely outside the visible viewport.
+     */
+    private static boolean isOnScreen(View view) {
+        if (view == null || !view.isAttachedToWindow()
+                || view.getWidth() == 0 || view.getHeight() == 0) {
+            return false;
+        }
+        Rect visible = new Rect();
+        return view.getGlobalVisibleRect(visible);
     }
 
     private static String extractUrl(Object imageUrl) {

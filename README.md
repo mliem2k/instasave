@@ -120,10 +120,19 @@ this project has existed, and patches 1 and 4 above only reach whatever is curre
 menu builder's own bytecode. Whatever Instagram does with that menu next, this does not depend on
 it at all. A small, semi-transparent round button, in Instagram's own blue, does not sit at a fixed
 corner of the screen. It is repositioned every frame to sit on top of the bottom right corner of
-whichever image was most recently bound anywhere in the app, which in practice is the post
-currently on screen, since Instagram only renders what is near the viewport. It stays hidden until
-something is bound, rather than sitting there ready to answer a tap with nothing to save. Tapping
-it opens a small menu of InstaSave's own, independent of Instagram's, with a single Save entry.
+whichever image was most recently bound anywhere in the app and is actually visible right now,
+which in practice is the post currently on screen. It stays hidden until something qualifies,
+rather than sitting there ready to answer a tap with nothing to save.
+
+"Actually visible right now" is checked deliberately, not assumed from "bound most recently": a
+carousel slide or a Reels page one swipe away is commonly kept attached ahead of time so the swipe
+has something ready to show, so the very last bind can legitimately be for a page sitting off to
+the side rather than the one on screen. Trusting that last bind unconditionally is what made the
+button disappear on real content; it now walks backward through a short history of recent binds
+for the most recent one that is attached, has real size, and has at least one visible pixel on
+screen, and reuses that same walk to know exactly which post a tap should save, so the button
+never points at content different from what it is visually sitting on. Tapping it opens a small
+menu of InstaSave's own, independent of Instagram's, with a single Save entry.
 
 This does not inject a real child view into Instagram's own post layout: that would mean guessing
 the right `ViewGroup.LayoutParams` type for a parent whose actual class is unknown and varies by
@@ -397,13 +406,21 @@ there, so running both never produces two.
       list at all, replaced by different entries. Whatever the cause, chasing wherever that menu
       moves to next is not a durable fix on its own.
 - [x] Floating save button and menu, independent of Instagram's own overflow menu entirely: a
-      small button that tracks whichever image was most recently bound and repositions itself onto
-      that image's bottom right corner every frame, rather than sitting at a fixed spot on screen,
-      opening a small menu of InstaSave's own. Hidden entirely whenever nothing is bound, instead of
-      answering a tap with nothing to save. Needs no new bytecode patch, reuses the existing URL
-      tracking, and is added lazily so it never costs an activity an extra layout pass while it is
-      becoming visible. Verified on device with no crash, correctly hidden on a screen with nothing
-      bound; not yet confirmed tracking or saving real bound content on a logged in account.
+      small button that tracks whichever image was most recently bound AND is actually visible on
+      screen right now, repositioning itself onto that image's bottom right corner every frame,
+      rather than sitting at a fixed spot on screen, opening a small menu of InstaSave's own.
+      Hidden entirely whenever nothing qualifies, instead of answering a tap with nothing to save.
+      Real device testing found the button never appeared at all: checking only whether the most
+      recently bound view was attached to a window was not enough, since a carousel slide or a
+      Reels page kept attached one swipe ahead of the one on screen passes that check while sitting
+      off to the side. Fixed by walking backward through a short history of recent binds for one
+      that is attached, has real size, and has at least one visible pixel on screen. Needs no new
+      bytecode patch, reuses the existing URL tracking, and is added lazily so it never costs an
+      activity an extra layout pass while it is becoming visible. Verified: builds clean, patches
+      apply with zero exceptions, unit tests pass; not yet confirmed tracking or saving real bound
+      content on a logged in account, since this project no longer uses an emulator to verify (it
+      has never once caught the bugs that mattered here) and real verification is the next real
+      device test.
 - [x] Long press to save no longer skips feed posts and carousel slides. It used to skip any view
       Instagram had already made long clickable, on the assumption those surfaces had a menu for
       saving anyway; once that stopped being reliably true, it now runs its own independent long
