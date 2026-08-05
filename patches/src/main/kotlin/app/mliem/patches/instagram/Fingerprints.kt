@@ -64,6 +64,49 @@ internal object MobileConfigBooleanReadFingerprint : Fingerprint(
     }
 )
 
+private const val THIRD_PARTY_DOWNLOAD_ELIGIBILITY_MARKER =
+    "android_purge_26_q3_ClipsDownloadUtil_isMediaEligibleForThirdPartyDownloads"
+
+/**
+ * Whether one piece of media is eligible for a third party download row at all.
+ *
+ * A feed post, every item inside a carousel, and a reel's own "redesigned" menu builder all reach
+ * this one method before the option is ever added as a menu candidate; forcing the two MobileConfig
+ * ids it happens to read is not enough on its own, since the method also branches on an organic,
+ * non remix clip check, a media type comparison, a separate kill switch, and an account level
+ * bypass that has nothing to do with MobileConfig. A carousel item or a reel that fails any one of
+ * those still comes back ineligible no matter which flag ids are forced. Hooking this method
+ * directly, so it always answers eligible, is what actually reaches every caller uniformly, the
+ * same reasoning that already justifies hooking the shared MobileConfig reader above instead of
+ * chasing every gate that calls it.
+ *
+ * Anchored on its own internal trace label, unique in the whole app.
+ */
+internal object ThirdPartyDownloadEligibilityFingerprint : Fingerprint(
+    returnType = "Z",
+    parameters = listOf("L", "/Media;"),
+    strings = listOf(THIRD_PARTY_DOWNLOAD_ELIGIBILITY_MARKER)
+)
+
+/**
+ * The sibling restriction check: answering true hides the row regardless of eligibility above.
+ *
+ * Carries no string of its own, so it is identified by shape, a boolean parameter alongside the
+ * boolean return, plus a sibling method in the same class carrying the eligibility marker. That
+ * pair is unique: only the eligibility check's own class declares a `(L, Z) -> Z` method at all.
+ */
+internal object ThirdPartyDownloadRestrictionFingerprint : Fingerprint(
+    returnType = "Z",
+    parameters = listOf("L", "Z"),
+    custom = { _, classDef ->
+        classDef.methods.any { sibling ->
+            sibling.indexOfFirstInstruction {
+                getReference<StringReference>()?.string == THIRD_PARTY_DOWNLOAD_ELIGIBILITY_MARKER
+            } >= 0
+        }
+    }
+)
+
 /**
  * The method producing the allowlist of options the feed post overflow menu may show.
  *

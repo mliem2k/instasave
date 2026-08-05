@@ -3,10 +3,13 @@ package app.mliem.patches.instagram.download
 import app.mliem.patches.Constants.COMPATIBILITY_INSTAGRAM
 import app.mliem.patches.instagram.Extension
 import app.mliem.patches.instagram.MobileConfigBooleanReadFingerprint
+import app.mliem.patches.instagram.ThirdPartyDownloadEligibilityFingerprint
+import app.mliem.patches.instagram.ThirdPartyDownloadRestrictionFingerprint
 import app.mliem.patches.instagram.instaSaveExtensionPatch
 import app.mliem.patches.util.invokeStaticRange
 import app.mliem.patches.util.parameterRegisterOrThrow
 import app.mliem.patches.util.scratchRegisterOrThrow
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.patch.bytecodePatch
@@ -30,12 +33,24 @@ import app.morphe.patcher.patch.bytecodePatch
  * gates, which is why it survived Instagram consolidating those gates between 436 and 440. The
  * extension returns null for every id it does not recognise, so the only observable effect is on
  * the two ids it names.
+ *
+ * Those two flags turned out not to be the whole story for a carousel post or a reel. A separate
+ * eligibility check, shared by the feed and carousel candidate list builder and by the reel menu's
+ * own "redesigned download row" builder, decides per item whether DOWNLOAD is even offered as a
+ * candidate before either of the two flags above is ever consulted; a menu allowlist cannot show
+ * an option that was never a candidate to begin with. That check branches on more than MobileConfig
+ * (an organic, non remix clip test, a media type comparison, a kill switch, an account level
+ * bypass), so forcing flag values alone cannot make it universal. Hooking the eligibility check and
+ * its sibling restriction check directly, the same reasoning as the shared reader above, is what
+ * actually makes a carousel item or a reel come back eligible regardless of which of those other
+ * conditions it would otherwise have failed.
  */
 @Suppress("unused")
 val unlockNativeDownloadPatch = bytecodePatch(
     name = "Unlock native download",
-    description = "Unlocks the download option Instagram already ships for reels and feed posts " +
-        "by forcing the two flags that hide it. Uses Instagram's own save flow.",
+    description = "Unlocks the download option Instagram already ships for reels, feed posts, and " +
+        "carousels by forcing the flags and eligibility checks that hide it. Uses Instagram's " +
+        "own save flow.",
     default = true
 ) {
     compatibleWith(COMPATIBILITY_INSTAGRAM)
@@ -63,6 +78,28 @@ val unlockNativeDownloadPatch = bytecodePatch(
                     return $scratch
                     :instasave_no_override
                     nop
+                """
+            )
+        }
+
+        ThirdPartyDownloadEligibilityFingerprint.method.apply {
+            val scratch = scratchRegisterOrThrow()
+            addInstructions(
+                0,
+                """
+                    const/4 $scratch, 0x1
+                    return $scratch
+                """
+            )
+        }
+
+        ThirdPartyDownloadRestrictionFingerprint.method.apply {
+            val scratch = scratchRegisterOrThrow()
+            addInstructions(
+                0,
+                """
+                    const/4 $scratch, 0x0
+                    return $scratch
                 """
             )
         }

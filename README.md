@@ -43,17 +43,26 @@ Four patches, deliberately layered so the cheapest and most durable one carries 
 
 Instagram already ships a complete DOWNLOAD row for reels and, since the post and reel overflow
 menus were merged onto one row builder, for feed posts too, wired to its own save to camera roll
-flow. It is not missing, it is gated behind two boolean methods: "can this media be downloaded"
-and "is the viewer restricted from downloading". Both answer against you for someone else's post.
+flow. It is not missing, it is gated behind two boolean MobileConfig methods reached by every
+caller, plus a second, independent eligibility gate that decides per media item whether DOWNLOAD
+is even a candidate before either of those flags is consulted at all.
 
-`unlockNativeDownloadPatch` flips those two and stops. No row is constructed, no URL is resolved,
-no bytes are written by us. Each gate is located by the MobileConfig parameter id compiled into
-it as a literal, which is a stable identity rather than an obfuscated name.
+`unlockNativeDownloadPatch` forces all of it. The two MobileConfig gates are answered by the
+single method every boolean flag read passes through in this build, located by the parameter id
+compiled into it as a literal, which is a stable identity rather than an obfuscated name. The
+eligibility gate is a separate pair of methods, shared by the feed and carousel candidate list
+builder and by the reel menu's own row builder, and forced to answer eligible and not restricted
+directly rather than by satisfying every condition that leads to it: an organic, non remix clip
+check, a media type comparison, a kill switch, and an account level bypass, none of which is a
+MobileConfig id at all. Forcing the flags alone left a carousel or a reel that failed any one of
+those still ineligible; hooking the eligibility gate itself is what actually reaches every caller
+uniformly. No row is constructed, no URL is resolved, no bytes are written by us.
 
 This is the fix the earlier `forceShowChannelsSaveButtonPatch` was reaching for, at the right
 layer. `RESEARCH.md` records why the MobileConfig route was a dead end: a retail APK carries no
 id to name mapping, so flags cannot be discovered by decompiling. These gates need no mapping,
-because the literal is the thing being matched.
+because the literal, and the eligibility check's own internal trace label, are the things being
+matched.
 
 ### 2. Save stories (default on)
 
@@ -76,12 +85,12 @@ that the resolver falls back to when a tap handler captured nothing reachable.
 
 ### 4. Save posts and reels, fallback (default on)
 
-Patch 1 forces a boolean flag read keyed only by a parameter id, with no `Media` in scope, so it
-cannot express "except for a multi image post". Whatever decision leaves a carousel without a
-native download row lives somewhere that flag cannot reach. Rather than trace it through Instagram's
-enormous, obfuscated menu builder for one more anchor, this patch is a general backstop: it appends
-the download entry to the same allowlist Instagram renders from, wherever it finds it missing,
-single media or carousel alike.
+Originally written on the theory that patch 1's flags alone could not reach a multi image post or
+a reel; tracing the actual eligibility gate showed that was only half right, and patch 1 now hooks
+that gate directly. This patch remains as a second, independent layer: it appends the download
+entry to the same allowlist Instagram renders from, wherever it finds it missing, in case some
+other, still untraced path excludes it from that allowlist even once patch 1 has made it a genuine
+candidate.
 
 Running alongside patch 1 is deliberate, not a duplicate risk. The injected code only appends when
 the list does not already contain the entry, and `MediaOption$Option.DOWNLOAD` is a single enum
@@ -336,9 +345,12 @@ there, so running both never produces two.
       stack.
 - [x] Block ads (on by default): removes sponsored posts and the impression tracking tied to
       showing one.
-- [x] Multi image posts get a download entry even where Instagram's native row does not appear,
-      via the fallback patch running by default alongside the native unlock, guarded against
-      duplicating an entry that is already there.
+- [x] Multi image posts and reels get a download entry: the native unlock now hooks the shared
+      eligibility gate that decides per item whether DOWNLOAD is a candidate at all, not just the
+      two MobileConfig flags that gate it afterward. The fallback patch remains as a second,
+      independent layer, guarded against duplicating an entry that is already there. Verified at
+      the bytecode level (both fingerprints resolve, the injected return lands at each method's
+      entry) and on device with no crash; not yet confirmed against a real logged in feed.
 - [ ] Which carousel slide is saved is not yet aware of which one is on screen; the highest
       resolution candidate found is saved regardless of position.
 - [x] Builds. `./gradlew :patches:build` produces `patches/build/libs/patches-0.2.0.mpp` with the

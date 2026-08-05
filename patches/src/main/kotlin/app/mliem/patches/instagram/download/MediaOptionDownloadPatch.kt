@@ -16,16 +16,17 @@ import app.morphe.patcher.patch.bytecodePatch
 
 /**
  * Adds a download entry to the feed post and reel overflow menus, and handles taps on it here
- * rather than deferring to Instagram, for whichever posts `unlockNativeDownloadPatch` does not
- * cover on its own.
+ * rather than deferring to Instagram, as a second, independent layer under `unlockNativeDownloadPatch`.
  *
- * That patch forces a boolean flag read that is keyed only by a parameter id, with no Media in
- * scope at all, so it cannot express "except for a multi image post". Instagram's own decision to
- * leave a multi image carousel without a download row, if that is what is happening, is baked in
- * somewhere neither of the two forced flags can reach. Rather than trace that decision through a
- * very large, heavily obfuscated menu builder for one more anchor, this patch is a general,
- * version resilient backstop: it appends the download entry to the SAME allowlist Instagram's own
- * native flow renders from, wherever it finds it missing, single media or carousel alike.
+ * The actual reason a multi image carousel or a reel could come back without a download row turned
+ * out to live one level below the allowlist this patch injects into: a separate eligibility check,
+ * shared by the feed and carousel candidate list builder and the reel menu's own row builder,
+ * decides per item whether DOWNLOAD is a candidate at all before this allowlist is ever consulted.
+ * `unlockNativeDownloadPatch` now hooks that eligibility check directly, which is the fix that
+ * actually matters for carousels and reels; see its own doc comment for the full trace. This patch
+ * remains as a second, independent layer: it appends the download entry to the SAME allowlist
+ * Instagram's own native flow renders from, wherever it finds it missing, in case some other, still
+ * untraced path excludes it from that allowlist even once it is a genuine candidate.
  *
  * Enabling this alongside `unlockNativeDownloadPatch` is deliberate, not a duplicate risk: the
  * injected code only appends the constant when the list does not already contain it
