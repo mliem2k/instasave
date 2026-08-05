@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.PopupMenu;
 import android.widget.TextView;
@@ -18,27 +19,33 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * An InstaSave owned save button, floating over every screen in the app.
+ * An InstaSave owned save button, kept glued to whichever post is actually on screen.
  *
  * <p>Instagram's own overflow menu is no longer reliably where the download option lives. Rather
  * than keep chasing wherever it moved to, this adds an independent trigger that does not depend
- * on Instagram's menu at all: a small round button fixed to a corner of the screen, present on
- * every Activity, that opens a menu of InstaSave's own. Registered once through
- * {@link Application.ActivityLifecycleCallbacks} rather than patched into any specific screen, so
- * it does not depend on which Activity or Fragment happens to be hosting the current view.
+ * on Instagram's menu at all. It does not, however, inject a real child view into Instagram's own
+ * post layout: that would need to guess the right {@code ViewGroup.LayoutParams} type for a parent
+ * whose actual class is unknown and varies by surface, and guessing wrong on a stacking layout
+ * (a vertical {@code LinearLayout}, say) would not overlay the image at all, it would insert as a
+ * whole extra row and visibly break Instagram's own feed. Instead this button lives in InstaSave's
+ * own layer, added once to the activity's decor view, and is repositioned every frame to sit on
+ * top of whichever image {@link ImageViewRegistry} most recently saw bound, using nothing but that
+ * image's own current on screen location. The result looks the same, a button on the post, without
+ * ever touching a view Instagram owns.
  *
- * <p>Tapping the button, then Save in the menu it opens, saves whichever image or video was most
- * recently rendered anywhere in the app: {@link ImageViewRegistry}'s own record of the last bound
- * view, resolved the same way a long press or a menu tap resolves one, so the file is named the
- * same way too. In practice that is the post currently on screen, since Instagram only renders
- * what is near the viewport.
+ * <p>Hidden whenever there is nothing bound to act on, rather than left visible and answering a tap
+ * with "nothing to save yet": if {@link ImageViewRegistry#mostRecentView()} is null, so is the
+ * button.
+ *
+ * <p>Registered once through {@link Application.ActivityLifecycleCallbacks} rather than patched
+ * into any specific screen, so it does not depend on which Activity or Fragment happens to be
+ * hosting the current view.
  */
 public final class FloatingSaveButton {
 
-    private static final int SIZE_DP = 52;
-    private static final int MARGIN_END_DP = 16;
-    private static final int MARGIN_BOTTOM_DP = 96;
-    private static final int ACCENT_COLOR = Color.parseColor("#0095F6");
+    private static final int SIZE_DP = 40;
+    private static final int MARGIN_DP = 8;
+    private static final int ACCENT_COLOR = Color.parseColor("#CC0095F6"); // semi-transparent
 
     /** One button per Activity, so a config change or re-resume never adds a second one. */
     private static final Map<Activity, View> ATTACHED = new WeakHashMap<>();
@@ -90,7 +97,7 @@ public final class FloatingSaveButton {
         if (activity instanceof SettingsActivity || ATTACHED.containsKey(activity)) {
             return;
         }
-        ViewGroup content = activity.findViewById(android.R.id.content);
+        final ViewGroup content = activity.findViewById(android.R.id.content);
         if (content == null) {
             return;
         }
@@ -109,36 +116,73 @@ public final class FloatingSaveButton {
         });
     }
 
-    private static void attachButton(Activity activity, ViewGroup content) {
+    private static void attachButton(final Activity activity, final ViewGroup content) {
         try {
             if (activity.isFinishing() || activity.isDestroyed()) {
                 return;
             }
-            View button = buildButton(activity);
-            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                    dp(activity, SIZE_DP), dp(activity, SIZE_DP));
-            params.gravity = Gravity.BOTTOM | Gravity.END;
-            params.rightMargin = dp(activity, MARGIN_END_DP);
-            params.bottomMargin = dp(activity, MARGIN_BOTTOM_DP);
+            final View button = buildButton(activity);
+            final int size = dp(activity, SIZE_DP);
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(size, size);
+            button.setVisibility(View.GONE);
             content.addView(button, params);
             ATTACHED.put(activity, button);
+            trackTargetPost(button, content, dp(activity, MARGIN_DP));
         } catch (Throwable t) {
             InstaSave.log("floating save button attach failed", t);
         }
+    }
+
+    /**
+     * Repositions the button onto {@link ImageViewRegistry#mostRecentView()}'s current on screen
+     * bounds before every single frame this window draws, which is what keeps it glued to the
+     * right post through scrolling, paging between carousel slides, or a fresh post being bound
+     * as the feed loads more, without needing a reference to whatever is actually scrolling.
+     * Hidden outright when nothing is bound, rather than left sitting somewhere stale.
+     */
+    private static void trackTargetPost(final View button, final ViewGroup content, final int margin) {
+        button.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+            private final int[] targetLocation = new int[2];
+            private final int[] contentLocation = new int[2];
+
+            @Override
+            public boolean onPreDraw() {
+                if (!button.isAttachedToWindow()) {
+                    // The window is gone; nothing left to track. Cannot remove this listener from
+                    // inside its own callback, but returning true every time costs nothing.
+                    return true;
+                }
+                View target = ImageViewRegistry.mostRecentView();
+                if (target == null || target.getWidth() == 0 || target.getHeight() == 0) {
+                    button.setVisibility(View.GONE);
+                    return true;
+                }
+                button.setVisibility(View.VISIBLE);
+
+                target.getLocationOnScreen(targetLocation);
+                content.getLocationOnScreen(contentLocation);
+                int size = button.getWidth();
+                float x = (targetLocation[0] - contentLocation[0]) + target.getWidth() - size - margin;
+                float y = (targetLocation[1] - contentLocation[1]) + target.getHeight() - size - margin;
+                button.setX(x);
+                button.setY(y);
+                return true;
+            }
+        });
     }
 
     private static View buildButton(final Activity activity) {
         TextView button = new TextView(activity);
         button.setText("⤓"); // a plain downward-arrow-into-tray glyph, no icon resource needed
         button.setTextColor(Color.WHITE);
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
         button.setGravity(Gravity.CENTER);
 
         GradientDrawable background = new GradientDrawable();
         background.setShape(GradientDrawable.OVAL);
         background.setColor(ACCENT_COLOR);
         button.setBackground(background);
-        button.setElevation(dp(activity, 4));
+        button.setElevation(dp(activity, 3));
 
         button.setOnClickListener(new View.OnClickListener() {
             @Override

@@ -118,11 +118,20 @@ one. Locating the carousel position accessor is unresearched.
 Instagram's own overflow menu is not a fixed target: it has changed shape once already in the time
 this project has existed, and patches 1 and 4 above only reach whatever is currently baked into the
 menu builder's own bytecode. Whatever Instagram does with that menu next, this does not depend on
-it at all. A small round button, styled in Instagram's own blue, floats in the bottom right corner
-of every screen in the app. Tapping it opens a small menu of InstaSave's own, independent of
-Instagram's, with a single Save entry that saves whichever image or video was most recently
-rendered anywhere in the app, which in practice is the post currently on screen, since Instagram
-only renders what is near the viewport.
+it at all. A small, semi-transparent round button, in Instagram's own blue, does not sit at a fixed
+corner of the screen. It is repositioned every frame to sit on top of the bottom right corner of
+whichever image was most recently bound anywhere in the app, which in practice is the post
+currently on screen, since Instagram only renders what is near the viewport. It stays hidden until
+something is bound, rather than sitting there ready to answer a tap with nothing to save. Tapping
+it opens a small menu of InstaSave's own, independent of Instagram's, with a single Save entry.
+
+This does not inject a real child view into Instagram's own post layout: that would mean guessing
+the right `ViewGroup.LayoutParams` type for a parent whose actual class is unknown and varies by
+surface, and guessing wrong on a stacking layout would not overlay the image at all, it would
+insert as a whole extra row and visibly break Instagram's own feed. Instead the button lives in its
+own layer, added once to the activity's decor view, and tracks the target image's own current on
+screen location every frame through a plain `ViewTreeObserver.OnPreDrawListener`, never touching a
+view Instagram owns.
 
 Needs no new bytecode patch at all: it is registered once, through the standard
 `Application.ActivityLifecycleCallbacks` API, from the same extension entry point that already
@@ -388,11 +397,13 @@ there, so running both never produces two.
       list at all, replaced by different entries. Whatever the cause, chasing wherever that menu
       moves to next is not a durable fix on its own.
 - [x] Floating save button and menu, independent of Instagram's own overflow menu entirely: a
-      round button in the bottom right corner of every screen, opening a small menu of InstaSave's
-      own. Needs no new bytecode patch, reuses the existing URL tracking, and is added lazily so it
-      never costs an activity an extra layout pass while it is becoming visible. Verified on device
-      with no crash and the button rendering correctly across repeated fresh installs; not yet
-      confirmed saving real content on a logged in account.
+      small button that tracks whichever image was most recently bound and repositions itself onto
+      that image's bottom right corner every frame, rather than sitting at a fixed spot on screen,
+      opening a small menu of InstaSave's own. Hidden entirely whenever nothing is bound, instead of
+      answering a tap with nothing to save. Needs no new bytecode patch, reuses the existing URL
+      tracking, and is added lazily so it never costs an activity an extra layout pass while it is
+      becoming visible. Verified on device with no crash, correctly hidden on a screen with nothing
+      bound; not yet confirmed tracking or saving real bound content on a logged in account.
 - [x] Long press to save no longer skips feed posts and carousel slides. It used to skip any view
       Instagram had already made long clickable, on the assumption those surfaces had a menu for
       saving anyway; once that stopped being reliably true, it now runs its own independent long

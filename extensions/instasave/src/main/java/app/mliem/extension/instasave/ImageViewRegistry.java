@@ -194,6 +194,18 @@ public final class ImageViewRegistry {
     }
 
     /**
+     * The view behind {@link #mostRecentUrl()}, or null if nothing has bound yet or that view has
+     * since been recycled out of the window. Lets a caller with no view of its own, such as the
+     * floating save button, position itself on top of the post that URL actually belongs to
+     * instead of sitting at a fixed spot on screen.
+     */
+    public static View mostRecentView() {
+        WeakReference<View> ref = mostRecentView;
+        View view = ref != null ? ref.get() : null;
+        return view != null && view.isAttachedToWindow() ? view : null;
+    }
+
+    /**
      * The most recently bound image, resolved with as much metadata as a graph walk from its
      * view can find, or null if nothing has bound yet. In practice this is whichever post is
      * currently on screen, since Instagram only renders what is near the viewport.
