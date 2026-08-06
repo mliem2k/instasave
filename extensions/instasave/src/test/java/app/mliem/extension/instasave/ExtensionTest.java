@@ -332,6 +332,22 @@ public class ExtensionTest {
         assertArrayEquals(new int[]{2, 0}, Updater.parseVersion("v2.0"));
     }
 
+    @Test
+    public void onlyAFullyUploadedApkAssetCountsAsDownloadable() {
+        String url = "https://github.com/o/r/releases/download/v1/app.apk";
+        assertTrue(Updater.isDownloadableApkAsset("app.apk", "uploaded", url));
+        // The one that matters: an asset whose upload is still running is listed by the API in
+        // state "starter", and its download URL answers 404 until the upload finishes.
+        assertFalse("an asset still uploading is not downloadable",
+                Updater.isDownloadableApkAsset("app.apk", "starter", url));
+        assertFalse("a non-apk asset is never the update",
+                Updater.isDownloadableApkAsset("sha256sums.txt", "uploaded", url));
+        assertFalse("no URL means nothing to fetch",
+                Updater.isDownloadableApkAsset("app.apk", "uploaded", ""));
+        assertFalse("missing fields must not throw",
+                Updater.isDownloadableApkAsset(null, null, null));
+    }
+
     // endregion
 
     // region account naming

@@ -125,7 +125,7 @@ public final class Updater {
             public void run() {
                 try {
                     UpdateInfo info = findUpdate(app, false);
-                    if (info != null) {
+                    if (info != null && info.apkUrl != null) {
                         notifyUpdate(app, info.tag, info.apkUrl);
                     }
                 } catch (Throwable t) {
@@ -164,6 +164,9 @@ public final class Updater {
                     UpdateInfo info = findUpdate(app, true);
                     if (info == null) {
                         InstaSave.toast(app, "InstaSave is up to date");
+                    } else if (info.apkUrl == null) {
+                        InstaSave.toast(app, "InstaSave " + stripV(info.tag)
+                                + " is still uploading. Try again in a few minutes.");
                     } else {
                         beginDownloadAndInstall(app, info.apkUrl, info.tag);
                     }
@@ -177,7 +180,13 @@ public final class Updater {
 
     // region check
 
-    /** The release tag and download URL of a newer build, once one has been found. */
+    /**
+     * The release tag and download URL of a newer build, once one has been found.
+     *
+     * <p>{@code apkUrl} is null when a newer release exists but its APK is not downloadable yet.
+     * A release that large is published first and has its asset uploaded afterwards, so there is a
+     * window of minutes where the release is visible and the download would 404.
+     */
     private static final class UpdateInfo {
         final String tag;
         final String apkUrl;
@@ -222,15 +231,20 @@ public final class Updater {
             }
 
             String body = readAll(connection.getInputStream());
-            markChecked(app, now);
 
             JSONObject json = new JSONObject(body);
             String tag = json.optString("tag_name", "");
             String apkUrl = firstApkAssetUrl(json.optJSONArray("assets"));
-            if (tag.isEmpty() || apkUrl == null) {
-                return null;
+            boolean newer = !tag.isEmpty() && isNewer(tag, currentVersion());
+            if (newer && apkUrl == null) {
+                // The release is up but its APK has not finished uploading. Deliberately not
+                // marked as checked: the next launch should look again rather than go quiet for a
+                // whole day over a file that landed a minute later.
+                InstaSave.log("release " + tag + " has no downloadable APK asset yet");
+                return new UpdateInfo(tag, null);
             }
-            return isNewer(tag, currentVersion()) ? new UpdateInfo(tag, apkUrl) : null;
+            markChecked(app, now);
+            return newer ? new UpdateInfo(tag, apkUrl) : null;
         } finally {
             connection.disconnect();
         }
@@ -250,14 +264,27 @@ public final class Updater {
             if (asset == null) {
                 continue;
             }
-            if (asset.optString("name", "").endsWith(".apk")) {
-                String url = asset.optString("browser_download_url", "");
-                if (!url.isEmpty()) {
-                    return url;
-                }
+            String url = asset.optString("browser_download_url", "");
+            if (isDownloadableApkAsset(
+                    asset.optString("name", ""), asset.optString("state", ""), url)) {
+                return url;
             }
         }
         return null;
+    }
+
+    /**
+     * True only for a release asset that can actually be fetched right now.
+     *
+     * <p>An asset appears in the release the moment its upload begins, in state "starter", and its
+     * download URL answers 404 until that upload completes. A release this size is published well
+     * before its APK finishes uploading, so treating a listed asset as a downloadable one hands
+     * out a URL that fails. Package visible and pure so it is unit tested on a plain JVM.
+     */
+    static boolean isDownloadableApkAsset(String name, String state, String url) {
+        return name != null && name.endsWith(".apk")
+                && "uploaded".equals(state)
+                && url != null && !url.isEmpty();
     }
 
     /** This build's InstaSave version, injected from the gradle {@code version} property. */
@@ -535,6 +562,13 @@ public final class Updater {
                     }
                 }
                 os.flush();
+            }
+            if (total > 0 && bytesRead != total) {
+                // A connection dropped mid transfer leaves a truncated but perfectly readable
+                // file, which the installer then rejects as a corrupt APK with no hint that the
+                // download was the problem. Fail here, where the cause is still known.
+                throw new IllegalStateException(
+                        "download truncated at " + bytesRead + " of " + total + " bytes");
             }
         } finally {
             connection.disconnect();
