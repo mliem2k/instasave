@@ -136,9 +136,12 @@ one. Locating the carousel position accessor is unresearched.
 Instagram's own overflow menu is not a fixed target: it has changed shape once already in the time
 this project has existed, and patches 1 and 4 above only reach whatever is currently baked into the
 menu builder's own bytecode. Whatever Instagram does with that menu next, this does not depend on
-it at all. A small dark circular button sits in the bottom left corner of the post's own image,
-and tapping it saves that post. Left rather than right because Instagram's own audio mute toggle
-lives in the bottom right.
+it at all. A small dark circular button sits on the left edge of the post's own image at half its
+height, and tapping it saves that post. Not in a corner, because every corner is already spoken
+for: the bottom right holds the audio mute toggle on a feed post, and on a reel the bottom left
+holds the account name, caption and audio ticker while the entire right side holds the like,
+comment, share and more rail. The left edge at mid height is the one region no Instagram surface
+puts anything in.
 
 It is a real child of the post's own container, not an overlay pinned to the screen. An earlier
 version was a button fixed to the corner of the window, which was rejected as bad design and
