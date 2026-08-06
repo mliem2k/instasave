@@ -182,7 +182,10 @@ public final class PostSaveButton {
     }
 
     /**
-     * Places the button over the bottom right of the image, in the host's own coordinate space.
+     * Places the button over the bottom left of the image, in the host's own coordinate space.
+     *
+     * <p>Left, not right: Instagram puts its own audio mute toggle in the bottom right of a post,
+     * so a button there would sit on top of it.
      *
      * <p>Positioned by translation rather than by layout params so it never participates in the
      * host's measure pass and so cannot change where anything else lands. Both views sit inside
@@ -199,7 +202,7 @@ public final class PostSaveButton {
         int size = dp(context, SIZE_DP);
         int margin = dp(context, MARGIN_DP);
 
-        button.setX((imageLocation[0] - hostLocation[0]) + image.getWidth() - size - margin);
+        button.setX((imageLocation[0] - hostLocation[0]) + margin);
         button.setY((imageLocation[1] - hostLocation[1]) + image.getHeight() - size - margin);
         button.setVisibility(View.VISIBLE);
     }
