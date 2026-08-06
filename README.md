@@ -405,6 +405,30 @@ Enable `Unlock native download` and `Save posts and reels (fallback)` together; 
 default in `tools/build_apk.sh`. The fallback only appends its entry where one is not already
 there, so running both never produces two.
 
+## Publishing a release
+
+```sh
+tools/release.sh
+```
+
+It reads the version from `gradle.properties`, expects `release/` to hold that version's APK,
+bundle and `notes.md` and nothing from any other version, regenerates `sha256sums.txt`, and then
+publishes. It does not touch git; commit and push separately.
+
+Two things about it are not incidental. It titles the release `InstaSave <version>`, because three
+releases published by hand ended up titled `v0.2.9` and friends instead. And it uploads every asset
+to a **draft**, publishing only once they are all up.
+
+That second part is what the in-app updater depends on. A release is visible to the releases API
+the moment it is published, but an asset is only fetchable once its own upload finishes, and the
+APK takes minutes. Publishing first and uploading afterwards therefore leaves a window in which the
+updater sees a new release whose download answers 404. The updater defends against this too, by
+requiring an asset to be in state `uploaded`, but the window should not be created in the first
+place.
+
+It also refuses to publish notes missing any of the standard headings, which is the only thing
+keeping them consistent: `release/` is gitignored, so the notes are written from scratch each time.
+
 ## Status
 
 - [x] Rootless clone with signature bypass
